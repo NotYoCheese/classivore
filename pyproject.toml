@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "classivore"
+version = "0.1.0"
+description = "Taxonomy-agnostic text classification pipeline"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.13"
+authors = [{name = "Mike Noe"}]
+
+dependencies = [
+    "anthropic>=0.40.0",
+    "beautifulsoup4>=4.12.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "trafilatura>=1.6.0",
+    "transformers>=4.40.0",
+    "torch>=2.0.0",
+    "scikit-learn>=1.3.0",
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "warcio>=1.7.0",
+]
+
+[project.optional-dependencies]
+agent = [
+    "langgraph>=1.0.0",
+]
+validate = [
+    "label-lens>=0.1.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+    "label-lens>=0.1.0",
+]
+
+[project.scripts]
+classivore = "classivore.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
