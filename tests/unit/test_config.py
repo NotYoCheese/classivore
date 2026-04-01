@@ -37,6 +37,16 @@ class TestTaxonomyConfig:
         assert isinstance(config.excluded_categories, list)
         assert len(config.excluded_categories) > 0
 
+    def test_enrichment_model_loaded(self):
+        """Enrichment model loads from config."""
+        config = load_taxonomy_config("iab-2.2")
+        assert config.enrichment_model == "claude-haiku-4-5-20251001"
+
+    def test_enrichment_max_tokens_loaded(self):
+        """Enrichment max tokens loads from config."""
+        config = load_taxonomy_config("iab-2.2")
+        assert config.enrichment_max_tokens == 150
+
 
 class TestDataDir:
     """Test data directory resolution."""
