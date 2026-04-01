@@ -71,6 +71,8 @@ def _register_enrich(subparsers):
     p = subparsers.add_parser("enrich", help="Enrich taxonomy with descriptions")
     _add_common_args(p)
     p.add_argument("--review", action="store_true", help="Interactive review after enrichment")
+    p.add_argument("--dry-run", action="store_true", help="Show what would be enriched")
+    p.add_argument("--poll-interval", type=int, default=30, help="Batch poll interval in seconds")
     p.set_defaults(func=_cmd_enrich)
 
 
@@ -137,7 +139,96 @@ def _register_taxonomy(subparsers):
 
 # Stub command handlers — each will be implemented in its own module
 def _cmd_enrich(args):
-    print(f"TODO: enrich taxonomy {args.taxonomy}")
+    from classivore.batch import (
+        get_api_client,
+        iter_succeeded_results,
+        poll_until_complete,
+        submit_batch,
+    )
+    from classivore.config.settings import load_taxonomy_config
+    from classivore.taxonomy.enricher import (
+        apply_results,
+        build_batch_requests,
+        parse_enrichment,
+    )
+    from classivore.taxonomy.loader import (
+        build_hierarchy,
+        load_taxonomy,
+        save_enriched_taxonomy,
+    )
+
+    config = load_taxonomy_config(args.taxonomy)
+
+    # Resume from enriched file if it exists, otherwise load raw taxonomy
+    enriched_path = config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+    if enriched_path.exists():
+        print(f"Resuming from {enriched_path.name}")
+        config.taxonomy_file = enriched_path
+    categories = load_taxonomy(config)
+
+    hierarchy = build_hierarchy(categories)
+    requests = build_batch_requests(categories, hierarchy, config)
+
+    already_enriched = len(categories) - len(requests)
+    print(f"Taxonomy: {config.name} ({len(categories)} categories)")
+    print(f"  Already enriched: {already_enriched}")
+    print(f"  To enrich: {len(requests)}")
+
+    if not requests:
+        print("Nothing to enrich.")
+        return
+
+    if args.dry_run:
+        print("Dry run — no API calls made.")
+        return
+
+    client = get_api_client()
+
+    print(f"\nSubmitting batch ({len(requests)} requests)...")
+    batch_id = submit_batch(client, requests)
+    print(f"Batch ID: {batch_id}")
+
+    print(f"Polling every {args.poll_interval}s...")
+    poll_until_complete(
+        client, batch_id, poll_interval=args.poll_interval, verbose=args.verbose,
+    )
+
+    print("\nProcessing results...")
+    results = {}
+    for custom_id, message in iter_succeeded_results(client, batch_id):
+        cat_id = custom_id.removeprefix("cat-")
+        results[cat_id] = parse_enrichment(message)
+
+    apply_results(categories, results)
+    save_enriched_taxonomy(categories, enriched_path)
+    print(f"\nSaved enriched taxonomy to {enriched_path}")
+    print(f"  Enriched: {len(results)} categories")
+
+    if args.review:
+        _review_enrichments(categories, results)
+
+
+def _review_enrichments(categories, results):
+    """Interactive review of newly enriched categories."""
+    enriched = [c for c in categories if c["id"] in results]
+    print(f"\nReview {len(enriched)} enriched categories ([a]ccept / [s]kip / [q]uit):\n")
+
+    for cat in enriched:
+        print(f"  {cat['display_name']}")
+        print(f"    Description: {cat['description']}")
+        print(f"    Boundary:    {cat['boundaries']}")
+
+        try:
+            choice = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nReview ended.")
+            return
+
+        if choice == "q":
+            print("Review ended.")
+            return
 
 
 def _cmd_collect(args):
