@@ -34,6 +34,14 @@ enrichment:
   model: "claude-haiku-4-5-20251001"
   max_tokens_per_category: 150
 
+# Collection settings
+collection:
+  target_per_category: 7
+  max_queries_per_category: 6
+  max_per_domain_per_category: 50
+  commoncrawl_crawl_id: "CC-MAIN-2026-08"
+  query_model: "claude-haiku-4-5-20251001"
+
 # Data collection hints
 domain_hints:
   Automotive:

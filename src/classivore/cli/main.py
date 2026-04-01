@@ -79,7 +79,11 @@ def _register_enrich(subparsers):
 def _register_collect(subparsers):
     p = subparsers.add_parser("collect", help="Collect training data")
     _add_common_args(p)
-    p.add_argument("--pages", type=int, default=100, help="Number of pages to collect")
+    p.add_argument("--pages", type=int, default=None, help="Total pages to collect (distributed across categories)")
+    p.add_argument("--resume", action="store_true", default=True, help="Resume from existing state (default)")
+    p.add_argument("--no-resume", action="store_true", help="Start fresh, ignoring existing state")
+    p.add_argument("--queries-only", action="store_true", help="Generate queries without fetching content")
+    p.add_argument("--audit-domains", action="store_true", help="Show domain quality report and exit")
     p.set_defaults(func=_cmd_collect)
 
 
@@ -232,7 +236,43 @@ def _review_enrichments(categories, results):
 
 
 def _cmd_collect(args):
-    print(f"TODO: collect {args.pages} pages for {args.taxonomy}")
+    from classivore.collection import audit_domains, run_collection
+    from classivore.config.settings import get_data_dir, load_taxonomy_config
+    from classivore.taxonomy.loader import load_taxonomy
+
+    config = load_taxonomy_config(args.taxonomy)
+    data_dir = get_data_dir(args.data_dir)
+
+    if args.audit_domains:
+        print(audit_domains(data_dir))
+        return
+
+    # Load enriched taxonomy if available
+    enriched_path = config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+    categories = load_taxonomy(config)
+
+    print(f"Taxonomy: {config.name} ({len(categories)} categories)")
+    print(f"Data dir: {data_dir}")
+
+    resume = args.resume and not args.no_resume
+
+    summary = run_collection(
+        config=config,
+        categories=categories,
+        data_dir=data_dir,
+        pages=args.pages,
+        resume=resume,
+        queries_only=args.queries_only,
+        verbose=args.verbose,
+    )
+
+    print(f"\nCollection complete:")
+    print(f"  Categories: {summary['satisfied_categories']}/{summary['total_categories']} satisfied")
+    print(f"  Pages: {summary['total_collected']}/{summary['total_target']}")
 
 
 def _cmd_validate(args):

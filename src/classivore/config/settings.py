@@ -63,6 +63,14 @@ class TaxonomyConfig:
         self.enrichment_model: str = enrichment.get("model", "claude-haiku-4-5-20251001")
         self.enrichment_max_tokens: int = enrichment.get("max_tokens_per_category", 150)
 
+        # Collection
+        collection = self._raw.get("collection", {})
+        self.target_per_category: int = collection.get("target_per_category", 7)
+        self.max_queries_per_category: int = collection.get("max_queries_per_category", 6)
+        self.max_per_domain_per_category: int = collection.get("max_per_domain_per_category", 50)
+        self.commoncrawl_crawl_id: Optional[str] = collection.get("commoncrawl_crawl_id")
+        self.query_model: str = collection.get("query_model", "claude-haiku-4-5-20251001")
+
         # Collection hints
         self.domain_hints: dict = self._raw.get("domain_hints", {})
         self.excluded_categories: list = self._raw.get("excluded_categories", [])

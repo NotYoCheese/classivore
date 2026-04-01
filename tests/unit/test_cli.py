@@ -30,12 +30,12 @@ class TestCLIParsing:
         captured = capsys.readouterr()
         assert "iab-2.2" in captured.out
 
-    def test_collect_pages(self, capsys):
-        """collect --pages passes page count."""
-        with patch("sys.argv", ["classivore", "collect", "--pages", "500"]):
+    def test_collect_audit_domains(self, capsys):
+        """collect --audit-domains runs without error."""
+        with patch("sys.argv", ["classivore", "collect", "--audit-domains"]):
             main()
         captured = capsys.readouterr()
-        assert "500" in captured.out
+        assert "domain" in captured.out.lower() or "No domain" in captured.out
 
     def test_taxonomy_override(self, capsys):
         """--taxonomy flag overrides default."""
