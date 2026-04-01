@@ -58,6 +58,11 @@ class TaxonomyConfig:
         self.focal_gamma: float = focal.get("gamma", 3.5)
         self.class_weight_cap: float = self._raw.get("class_weight_cap", 7.0)
 
+        # Enrichment
+        enrichment = self._raw.get("enrichment", {})
+        self.enrichment_model: str = enrichment.get("model", "claude-haiku-4-5-20251001")
+        self.enrichment_max_tokens: int = enrichment.get("max_tokens_per_category", 150)
+
         # Collection hints
         self.domain_hints: dict = self._raw.get("domain_hints", {})
         self.excluded_categories: list = self._raw.get("excluded_categories", [])
