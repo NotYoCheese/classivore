@@ -47,6 +47,15 @@ class TestTaxonomyConfig:
         config = load_taxonomy_config("iab-2.2")
         assert config.enrichment_max_tokens == 150
 
+    def test_collection_settings_loaded(self):
+        """Collection settings load from config."""
+        config = load_taxonomy_config("iab-2.2")
+        assert config.target_per_category == 7
+        assert config.max_queries_per_category == 6
+        assert config.max_per_domain_per_category == 50
+        assert config.commoncrawl_crawl_id == "CC-MAIN-2026-08"
+        assert config.query_model == "claude-haiku-4-5-20251001"
+
 
 class TestDataDir:
     """Test data directory resolution."""
