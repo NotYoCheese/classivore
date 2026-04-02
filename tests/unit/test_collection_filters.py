@@ -4,6 +4,7 @@
 import pytest
 
 from classivore.collection.filters import (
+    _is_ecommerce_domain,
     content_hash,
     filter_page,
     is_url_blocked,
@@ -12,11 +13,13 @@ from classivore.collection.filters import (
 
 
 class TestUrlBlocked:
+    # --- Always blocked (tier 1) ---
+
     def test_marketplace_blocked(self):
         assert is_url_blocked("https://marketplace.example.com/page") is not None
 
-    def test_shop_path_blocked(self):
-        assert is_url_blocked("https://example.com/shop/item") is not None
+    def test_cart_blocked(self):
+        assert is_url_blocked("https://example.com/cart/checkout") is not None
 
     def test_search_blocked(self):
         assert is_url_blocked("https://example.com/search?q=test") is not None
@@ -24,20 +27,109 @@ class TestUrlBlocked:
     def test_jobs_blocked(self):
         assert is_url_blocked("https://example.com/jobs/listing") is not None
 
-    def test_gift_guide_blocked(self):
-        assert is_url_blocked("https://example.com/gift-guide-2026") is not None
+    def test_gallery_blocked(self):
+        assert is_url_blocked("https://example.com/gallery/photos-2026") is not None
 
-    def test_cart_blocked(self):
-        assert is_url_blocked("https://example.com/cart/checkout") is not None
+    def test_photos_blocked(self):
+        assert is_url_blocked("https://example.com/photos/vacation") is not None
 
-    def test_article_path_allowed(self):
-        assert is_url_blocked("https://example.com/news/article/great-story") is None
+    def test_slideshow_blocked(self):
+        assert is_url_blocked("https://example.com/slideshow/top-moments") is not None
+
+    def test_ad_network_blocked(self):
+        assert is_url_blocked("https://openx.example.com/ad") is not None
+        assert is_url_blocked("https://doubleclick.net/track") is not None
+        assert is_url_blocked("https://adnxs.com/segment") is not None
+
+    def test_popup_blocked(self):
+        assert is_url_blocked("https://example.com/popup/subscribe") is not None
+
+    def test_admin_blocked(self):
+        assert is_url_blocked("https://example.com/admin/settings") is not None
+
+    # --- E-commerce only (tier 2) ---
+
+    def test_best_blocked_on_ecommerce(self):
+        assert is_url_blocked("https://bestbuy.com/best-deals/laptops") is not None
+
+    def test_best_allowed_on_editorial(self):
+        """Forbes 'best sedans' should pass — editorial, not e-commerce."""
+        assert is_url_blocked("https://www.forbes.com/sites/auto/2026/best-sedans-to-buy/") is None
+
+    def test_top_blocked_on_ecommerce(self):
+        assert is_url_blocked("https://amazon.com/top-sellers/electronics") is not None
+
+    def test_top_allowed_on_editorial(self):
+        assert is_url_blocked("https://www.nytimes.com/2026/top-stories-march") is None
+
+    def test_shop_blocked_on_ecommerce(self):
+        assert is_url_blocked("https://shopify-store.com/shop/item-123") is not None
+
+    def test_shop_allowed_on_editorial(self):
+        """Non-ecommerce domain with /shop/ in path — let content filters decide."""
+        assert is_url_blocked("https://www.example.com/workshop/creative-writing") is None
+
+    def test_gift_blocked_on_ecommerce(self):
+        assert is_url_blocked("https://walmart.com/gift-cards/holiday") is not None
+
+    def test_gift_allowed_on_editorial(self):
+        assert is_url_blocked("https://www.theatlantic.com/gift-guide-books-2026") is None
+
+    def test_products_blocked_on_ecommerce(self):
+        assert is_url_blocked("https://amazon.com/products/widget-123") is not None
+
+    def test_product_review_allowed_on_editorial(self):
+        assert is_url_blocked("https://www.wirecutter.com/product-review/best-router") is None
+
+    # --- Path depth ---
 
     def test_shallow_path_blocked(self):
         assert is_url_blocked("https://example.com/a") is not None
 
+    def test_two_char_path_blocked(self):
+        assert is_url_blocked("https://example.com/en") is not None
+
+    def test_three_char_path_allowed(self):
+        """3+ char paths allowed (e.g. /cars, /sedan/)."""
+        assert is_url_blocked("https://example.com/cars") is None
+
+    def test_section_page_allowed(self):
+        """Section pages like /sedan/ should pass now."""
+        assert is_url_blocked("https://www.caranddriver.com/sedan/") is None
+
     def test_deep_path_allowed(self):
         assert is_url_blocked("https://example.com/2026/03/my-article-title") is None
+
+    # --- General ---
+
+    def test_article_path_allowed(self):
+        assert is_url_blocked("https://example.com/news/article/great-story") is None
+
+
+class TestEcommerceDomain:
+    def test_amazon(self):
+        assert _is_ecommerce_domain("https://www.amazon.com/dp/B12345") is True
+
+    def test_ebay(self):
+        assert _is_ecommerce_domain("https://ebay.com/itm/12345") is True
+
+    def test_walmart(self):
+        assert _is_ecommerce_domain("https://www.walmart.com/ip/12345") is True
+
+    def test_bestbuy(self):
+        assert _is_ecommerce_domain("https://www.bestbuy.com/site/laptop") is True
+
+    def test_shop_in_domain(self):
+        assert _is_ecommerce_domain("https://shop.example.com/item") is True
+
+    def test_editorial_domain(self):
+        assert _is_ecommerce_domain("https://www.nytimes.com/article") is False
+
+    def test_forbes(self):
+        assert _is_ecommerce_domain("https://www.forbes.com/best-of") is False
+
+    def test_wikipedia(self):
+        assert _is_ecommerce_domain("https://en.wikipedia.org/wiki/Test") is False
 
 
 class TestFilterPage:

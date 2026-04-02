@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Content quality filters for collected web pages.
 
-Applies URL blocklist, word count bounds, boilerplate detection,
-unique word ratio, article vs listing detection, and truncation.
-Ported from iab_forge with improvements.
+Applies two-tier URL blocklist (always-block + e-commerce-only), word count
+bounds, boilerplate detection, unique word ratio, article vs listing detection,
+and truncation.
 """
 
 import hashlib
 import re
+from urllib.parse import urlparse
 
 # --- Boilerplate detection (applied to first 500 chars of short pages) ---
 
@@ -25,27 +26,46 @@ BOILERPLATE_PATTERNS = [
     re.compile(r"^.{0,30}(frequently asked questions|FAQ)\n", re.IGNORECASE),
 ]
 
-# --- URL blocklist (marketplace, listings, search, admin, etc.) ---
+# --- Two-tier URL blocklist ---
 
-URL_BLOCKLIST = [
-    # Marketplace and shopping
-    "marketplace.", "store.", "/marketplace/", "/shop/", "/products/", "/listing",
-    "/listings/", "/buy/", "/cart/", "/checkout/",
-    # Category pages and browsing
+# Always blocked regardless of domain
+URL_BLOCKLIST_ALWAYS = [
+    # E-commerce actions
+    "/cart/", "/checkout/", "/buy/",
+    # Navigation and browsing
     "/category/", "/categories/", "/browse/", "/filter/", "/sort",
     # Search and results
     "/search", "/results", "/query",
     # Job postings
     "/jobs/", "/careers/search/",
-    # Course listings
-    "/courses/search/", "/course/",
-    # Gift guides and buying guides
-    "/gift-", "/gift/", "/best-", "/top-", "/buying-guide", "/product-review",
-    # Policies and store pages
+    # Policy and admin pages
     "/pages/ordering-policy", "/pages/return-policy", "/pages/privacy",
     "/pages/compliance", "/pages/volume-discount", "/pages/contact",
-    # E-commerce admin
     "/admin/", "/account/", "/profile/", "/dashboard",
+    # Subdomains
+    "marketplace.", "store.",
+    # Media galleries (low text content)
+    "/photo/", "/photos/", "/pictures/", "/slides/", "/slideshow/",
+    "/gallery/", "/galleries/",
+    # Ad networks
+    "openx.", "doubleclick.", "adnxs.",
+    # Popups
+    "/popup",
+]
+
+# Only blocked on e-commerce domains (editorial sites may have good content)
+URL_BLOCKLIST_ECOMMERCE = [
+    "/best-", "/top-", "/product-review", "/buying-guide",
+    "/products/", "/shop/", "/marketplace/", "/listing", "/listings/",
+    "/gift-", "/gift/",
+    "/courses/search/", "/course/",
+]
+
+# Signals that a domain is e-commerce (checked against netloc)
+ECOMMERCE_DOMAIN_SIGNALS = [
+    "shop", "store", "buy", "deal", "price",
+    "amazon", "ebay", "walmart", "etsy", "alibaba",
+    "target.com", "costco", "bestbuy",
 ]
 
 # --- Content indicators (first 500 chars) ---
@@ -67,11 +87,23 @@ MAX_WORDS = 50000
 TRUNCATE_ABOVE = 2000
 TRUNCATE_TO = 1000
 MIN_UNIQUE_WORD_RATIO = 0.30
-MIN_PATH_DEPTH = 10
+MIN_PATH_DEPTH = 3
+
+
+def _is_ecommerce_domain(url):
+    """Check if a URL's domain has e-commerce signals."""
+    try:
+        domain = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return any(signal in domain for signal in ECOMMERCE_DOMAIN_SIGNALS)
 
 
 def is_url_blocked(url):
-    """Check URL against blocklist patterns and minimum path depth.
+    """Check URL against two-tier blocklist and minimum path depth.
+
+    Tier 1 (always block): e-commerce actions, admin, galleries, ad networks.
+    Tier 2 (e-commerce domains only): /best-, /top-, /products/, etc.
 
     Args:
         url: URL string to check.
@@ -81,11 +113,18 @@ def is_url_blocked(url):
     """
     url_lower = url.lower()
 
-    for pattern in URL_BLOCKLIST:
+    # Tier 1: always blocked
+    for pattern in URL_BLOCKLIST_ALWAYS:
         if pattern in url_lower:
             return f"url_blocklist:{pattern.strip('/')}"
 
-    # Require minimum path depth (not just homepage/listing page)
+    # Tier 2: blocked only on e-commerce domains
+    if _is_ecommerce_domain(url):
+        for pattern in URL_BLOCKLIST_ECOMMERCE:
+            if pattern in url_lower:
+                return f"url_ecommerce:{pattern.strip('/')}"
+
+    # Require minimum path depth (not just homepage)
     try:
         path = url.split("/", 3)[-1]
         if len(path) < MIN_PATH_DEPTH:

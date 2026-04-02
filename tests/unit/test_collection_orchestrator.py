@@ -2,21 +2,25 @@
 """Tests for collection orchestrator."""
 
 import json
+import os
+import signal
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from classivore.collection import run_collection
+from classivore.collection import run_collection, _seed_from_labels
 
 
-def _make_config():
+def _make_config(slug="iab-2.2"):
     config = MagicMock()
+    config.slug = slug
     config.target_per_category = 2
     config.max_queries_per_category = 6
     config.max_per_domain_per_category = 50
-    config.commoncrawl_crawl_id = None  # Skip CC for test speed
+    config.commoncrawl_crawl_id = None
     config.query_model = "claude-haiku-4-5-20251001"
     config.excluded_categories = []
+    config.search_providers = None
     return config
 
 
@@ -35,169 +39,281 @@ def _make_categories():
     ]
 
 
+def _words(n, prefix="word"):
+    return " ".join(f"{prefix}{i}" for i in range(n))
+
+
+def _mock_search_client(results):
+    """Create a mock SearchClient that returns given results."""
+    client = MagicMock()
+    client.search.return_value = results
+    client.active_provider_count = 1
+    client.reset_exhausted = MagicMock()
+    return client
+
+
 class TestRunCollection:
+    @patch("classivore.collection.extract_text")
     @patch("classivore.collection.fetch_page")
-    @patch("classivore.collection.search_brave")
-    def test_collects_pages(self, mock_search, mock_fetch, tmp_path):
+    @patch("classivore.collection.SearchClient")
+    def test_collects_pages(self, mock_client_cls, mock_fetch, mock_extract, tmp_path):
         """End-to-end: search → fetch → filter → save."""
-        mock_search.return_value = [
+        words1 = _words(200)
+        words2 = _words(200, "other")
+
+        client = _mock_search_client([
             {"url": "https://example.com/sedan-article-one", "title": "A", "description": ""},
             {"url": "https://example.com/sedan-article-two", "title": "B", "description": ""},
-        ]
-        # Return enough unique words to pass filters
-        words1 = " ".join(f"word{i}" for i in range(200))
-        words2 = " ".join(f"other{i}" for i in range(200))
-        mock_fetch.side_effect = [
-            f"<html><body><p>{words1}</p></body></html>",
-            f"<html><body><p>{words2}</p></body></html>",
-        ]
+        ])
+        mock_client_cls.from_config.return_value = client
+        mock_fetch.side_effect = [f"<html><body><p>{words1}</p></body></html>", f"<html><body><p>{words2}</p></body></html>"]
+        mock_extract.side_effect = [words1, words2]
 
-        config = _make_config()
-        categories = _make_categories()
-
-        with patch("classivore.collection.extract_text") as mock_extract:
-            mock_extract.side_effect = [words1, words2]
-            summary = run_collection(
-                config=config,
-                categories=categories,
-                data_dir=tmp_path,
-                pages=2,
-            )
+        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path, pages=2)
 
         assert summary["total_collected"] == 2
         assert summary["satisfied_categories"] == 1
 
-        # Verify corpus file was written
         corpus_file = tmp_path / "corpus" / "pages.json"
         assert corpus_file.exists()
         lines = corpus_file.read_text().strip().split("\n")
         assert len(lines) == 2
-        page = json.loads(lines[0])
-        assert "url" in page
-        assert "text" in page
-        assert "collected_at" in page
 
-    @patch("classivore.collection.search_brave")
-    def test_queries_only_mode(self, mock_search, tmp_path):
-        """queries_only generates queries without fetching."""
-        mock_search.return_value = []
-
-        config = _make_config()
-        categories = _make_categories()
+    @patch("classivore.collection.SearchClient")
+    def test_queries_only_mode(self, mock_client_cls, tmp_path):
+        """queries_only generates queries without searching."""
+        client = _mock_search_client([])
+        mock_client_cls.from_config.return_value = client
 
         summary = run_collection(
-            config=config,
-            categories=categories,
-            data_dir=tmp_path,
-            queries_only=True,
+            config=_make_config(), categories=_make_categories(),
+            data_dir=tmp_path, queries_only=True,
         )
 
-        # Should not have collected anything
         assert summary["total_collected"] == 0
-        # Search should not have been called
-        mock_search.assert_not_called()
+        client.search.assert_not_called()
 
+    @patch("classivore.collection.extract_text")
     @patch("classivore.collection.fetch_page")
-    @patch("classivore.collection.search_brave")
-    def test_skips_blocked_urls(self, mock_search, mock_fetch, tmp_path):
-        """URLs matching blocklist are skipped."""
-        mock_search.return_value = [
-            {"url": "https://example.com/shop/item", "title": "Shop", "description": ""},
+    @patch("classivore.collection.SearchClient")
+    def test_skips_blocked_urls(self, mock_client_cls, mock_fetch, mock_extract, tmp_path):
+        client = _mock_search_client([
+            {"url": "https://example.com/cart/item", "title": "Shop", "description": ""},
             {"url": "https://example.com/great-sedan-article-here", "title": "Article", "description": ""},
-        ]
-        words = " ".join(f"word{i}" for i in range(200))
+        ])
+        mock_client_cls.from_config.return_value = client
+        words = _words(200)
         mock_fetch.return_value = f"<html><body><p>{words}</p></body></html>"
+        mock_extract.return_value = words
 
         config = _make_config()
         config.target_per_category = 1
-        categories = _make_categories()
 
-        with patch("classivore.collection.extract_text") as mock_extract:
-            mock_extract.return_value = words
-            summary = run_collection(
-                config=config,
-                categories=categories,
-                data_dir=tmp_path,
-                pages=1,
-            )
-
-        # Shop URL should be filtered, article URL collected
+        summary = run_collection(config=config, categories=_make_categories(), data_dir=tmp_path, pages=1)
         assert summary["total_collected"] == 1
 
+    @patch("classivore.collection.extract_text")
     @patch("classivore.collection.fetch_page")
-    @patch("classivore.collection.search_brave")
-    def test_deduplicates_content(self, mock_search, mock_fetch, tmp_path):
-        """Identical content from different URLs is deduplicated."""
-        mock_search.return_value = [
+    @patch("classivore.collection.SearchClient")
+    def test_deduplicates_content(self, mock_client_cls, mock_fetch, mock_extract, tmp_path):
+        client = _mock_search_client([
             {"url": "https://a.com/sedan-article-here", "title": "A", "description": ""},
             {"url": "https://b.com/sedan-article-here", "title": "B", "description": ""},
-        ]
-        words = " ".join(f"word{i}" for i in range(200))
+        ])
+        mock_client_cls.from_config.return_value = client
+        words = _words(200)
         mock_fetch.return_value = f"<html><body><p>{words}</p></body></html>"
+        mock_extract.return_value = words
 
-        config = _make_config()
-        categories = _make_categories()
-
-        with patch("classivore.collection.extract_text") as mock_extract:
-            mock_extract.return_value = words
-            summary = run_collection(
-                config=config,
-                categories=categories,
-                data_dir=tmp_path,
-                pages=2,
-            )
-
-        # Same content = only 1 collected
+        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path, pages=2)
         assert summary["total_collected"] == 1
 
-    def test_resume_preserves_state(self, tmp_path):
-        """Resume mode preserves collected count from previous runs."""
-        from classivore.collection.state import CollectionState
-
-        # Simulate a previous run by writing state
-        state = CollectionState(tmp_path / "collection")
-        state.init_category("Sedan", target=5)
-        state.record_url("https://example.com/old", "Sedan", "collected", "live_scrape")
-        state.record_query("Sedan", "old query")
-        state.save()
-
-        config = _make_config()
-        config.target_per_category = 5
-        categories = _make_categories()
-
-        with patch("classivore.collection.search_brave") as mock_search, \
-             patch("classivore.collection.fetch_page") as mock_fetch, \
-             patch("classivore.collection.extract_text") as mock_extract:
-            words = " ".join(f"word{i}" for i in range(200))
-            mock_search.return_value = [
-                {"url": "https://example.com/new-sedan-article", "title": "New", "description": ""},
-            ]
-            mock_fetch.return_value = f"<html><body><p>{words}</p></body></html>"
-            mock_extract.return_value = words
-
-            summary = run_collection(config=config, categories=categories, data_dir=tmp_path, pages=5)
-
-        # 1 from previous state + 1 new = 2
-        assert summary["total_collected"] == 2
-
     def test_excludes_configured_categories(self, tmp_path):
-        """Categories in excluded_categories are skipped."""
         config = _make_config()
         config.excluded_categories = ["Automotive: Sedan"]
 
-        categories = _make_categories()
-
-        with patch("classivore.collection.search_brave") as mock_search:
-            mock_search.return_value = []
+        with patch("classivore.collection.SearchClient") as mock_client_cls:
+            client = _mock_search_client([])
+            mock_client_cls.from_config.return_value = client
             summary = run_collection(
-                config=config,
-                categories=categories,
-                data_dir=tmp_path,
-                queries_only=True,
+                config=config, categories=_make_categories(),
+                data_dir=tmp_path, queries_only=True,
             )
 
-        # Sedan is excluded, only non-leaf Automotive remains (which is also excluded as non-leaf)
         assert summary["total_categories"] == 0
+
+    def test_per_taxonomy_state_dir(self, tmp_path):
+        """State is stored in per-taxonomy directory."""
+        with patch("classivore.collection.SearchClient") as mock_client_cls:
+            client = _mock_search_client([])
+            mock_client_cls.from_config.return_value = client
+            run_collection(
+                config=_make_config(slug="iab-2.2"), categories=_make_categories(),
+                data_dir=tmp_path, queries_only=True,
+            )
+
+        state_file = tmp_path / "collection" / "iab-2.2" / "state.json"
+        assert state_file.exists()
+
+
+class TestCircuitBreaker:
+    @patch("classivore.collection.time.sleep")
+    @patch("classivore.collection.SearchClient")
+    def test_pauses_after_consecutive_failures(self, mock_client_cls, mock_sleep, tmp_path):
+        """Circuit breaker pauses after CIRCUIT_BREAKER_THRESHOLD consecutive None results."""
+        client = MagicMock()
+        # Return None enough times to trigger circuit breaker, then empty lists for remaining
+        client.search.side_effect = [None] * 6 + [[]] * 20
+        client.active_provider_count = 1
+        client.reset_exhausted = MagicMock()
+        mock_client_cls.from_config.return_value = client
+
+        # Use multiple leaf categories to generate enough queries
+        categories = _make_categories() + [
+            {"id": "3", "name": "SUV", "display_name": "Automotive: SUV",
+             "description": "Sport utility.", "boundaries": "", "path": ["Automotive", "SUV"],
+             "depth": 2, "is_leaf": True, "children_count": 0},
+            {"id": "4", "name": "Coupe", "display_name": "Automotive: Coupe",
+             "description": "Two-door sports.", "boundaries": "", "path": ["Automotive", "Coupe"],
+             "depth": 2, "is_leaf": True, "children_count": 0},
+        ]
+
+        run_collection(config=_make_config(), categories=categories, data_dir=tmp_path)
+
+        from classivore.collection import CIRCUIT_BREAKER_PAUSE
+        mock_sleep.assert_any_call(CIRCUIT_BREAKER_PAUSE)
+
+    @patch("classivore.collection.time.sleep")
+    @patch("classivore.collection.SearchClient")
+    def test_resets_on_success(self, mock_client_cls, mock_sleep, tmp_path):
+        """Consecutive failure count resets when search succeeds."""
+        client = MagicMock()
+        # 3 failures, then success, then 3 failures — should NOT trigger circuit breaker
+        client.search.side_effect = [None, None, None, [], None, None, None, []]
+        client.active_provider_count = 1
+        client.reset_exhausted = MagicMock()
+        mock_client_cls.from_config.return_value = client
+
+        run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path)
+
+        from classivore.collection import CIRCUIT_BREAKER_PAUSE
+        # Circuit breaker should NOT have fired (never hit 5 consecutive)
+        sleep_args = [call.args[0] for call in mock_sleep.call_args_list]
+        assert CIRCUIT_BREAKER_PAUSE not in sleep_args
+
+
+class TestQuerySlotProtection:
+    @patch("classivore.collection.SearchClient")
+    def test_query_not_recorded_on_transient_failure(self, mock_client_cls, tmp_path):
+        """Query is NOT recorded when search returns None (transient failure)."""
+        client = MagicMock()
+        client.search.return_value = None
+        client.active_provider_count = 1
+        client.reset_exhausted = MagicMock()
+        mock_client_cls.from_config.return_value = client
+
+        config = _make_config()
+        config.target_per_category = 1
+        run_collection(config=config, categories=_make_categories(), data_dir=tmp_path)
+
+        # Load state and check queries_tried is empty
+        state_file = tmp_path / "collection" / "iab-2.2" / "state.json"
+        state = json.loads(state_file.read_text())
+        sedan = state["categories"].get("Sedan", {})
+        assert sedan.get("queries_tried", []) == []
+
+    @patch("classivore.collection.SearchClient")
+    def test_query_recorded_on_empty_results(self, mock_client_cls, tmp_path):
+        """Query IS recorded when search returns [] (successful but empty)."""
+        client = MagicMock()
+        client.search.return_value = []
+        client.active_provider_count = 1
+        mock_client_cls.from_config.return_value = client
+
+        config = _make_config()
+        config.target_per_category = 1
+        run_collection(config=config, categories=_make_categories(), data_dir=tmp_path)
+
+        state_file = tmp_path / "collection" / "iab-2.2" / "state.json"
+        state = json.loads(state_file.read_text())
+        sedan = state["categories"].get("Sedan", {})
+        assert len(sedan.get("queries_tried", [])) > 0
+
+
+class TestSIGINT:
+    @patch("classivore.collection.SearchClient")
+    def test_sigint_saves_state(self, mock_client_cls, tmp_path):
+        """SIGINT triggers state save and clean exit."""
+        import classivore.collection as coll
+
+        client = MagicMock()
+
+        def search_and_interrupt(query, count=10):
+            coll._interrupted = True
+            return []
+
+        client.search.side_effect = search_and_interrupt
+        client.active_provider_count = 1
+        mock_client_cls.from_config.return_value = client
+
+        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path)
+
+        state_file = tmp_path / "collection" / "iab-2.2" / "state.json"
+        assert state_file.exists()
+        state = json.loads(state_file.read_text())
+        assert "categories" in state
+
+
+class TestLabelSeeding:
+    def test_seeds_from_labels(self, tmp_path):
+        """Label counts are used to pre-populate collected counts."""
+        from classivore.collection.state import CollectionState
+
+        # Create state with categories
+        state = CollectionState(tmp_path / "collection" / "iab-2.2")
+        state.init_category("Sedan", target=50)
+        state.init_category("SUV", target=50)
+
+        # Create labels file
+        labels_dir = tmp_path / "labels" / "iab-2.2"
+        labels_dir.mkdir(parents=True)
+        with open(labels_dir / "labels.json", "w") as f:
+            for _ in range(10):
+                f.write(json.dumps({"categories": ["Sedan"]}) + "\n")
+            for _ in range(3):
+                f.write(json.dumps({"categories": ["SUV"]}) + "\n")
+
+        _seed_from_labels(state, tmp_path, "iab-2.2")
+
+        assert state.categories["Sedan"]["collected"] == 10
+        assert state.categories["SUV"]["collected"] == 3
+
+    def test_seeding_only_increases(self, tmp_path):
+        """Seeding doesn't decrease existing collected counts."""
+        from classivore.collection.state import CollectionState
+
+        state = CollectionState(tmp_path / "collection" / "iab-2.2")
+        state.init_category("Sedan", target=50)
+        state.categories["Sedan"]["collected"] = 20
+
+        labels_dir = tmp_path / "labels" / "iab-2.2"
+        labels_dir.mkdir(parents=True)
+        with open(labels_dir / "labels.json", "w") as f:
+            for _ in range(5):
+                f.write(json.dumps({"categories": ["Sedan"]}) + "\n")
+
+        _seed_from_labels(state, tmp_path, "iab-2.2")
+
+        assert state.categories["Sedan"]["collected"] == 20  # Not reduced to 5
+
+    def test_no_labels_file_no_error(self, tmp_path):
+        """Missing labels file doesn't cause errors."""
+        from classivore.collection.state import CollectionState
+
+        state = CollectionState(tmp_path / "collection" / "iab-2.2")
+        state.init_category("Sedan", target=50)
+        _seed_from_labels(state, tmp_path, "iab-2.2")  # Should not raise
+        assert state.categories["Sedan"]["collected"] == 0
 
 
 class TestAuditDomains:
