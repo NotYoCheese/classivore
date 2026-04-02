@@ -84,6 +84,7 @@ def _register_collect(subparsers):
     p.add_argument("--no-resume", action="store_true", help="Start fresh, ignoring existing state")
     p.add_argument("--queries-only", action="store_true", help="Generate queries without fetching content")
     p.add_argument("--audit-domains", action="store_true", help="Show domain quality report and exit")
+    p.add_argument("--status", action="store_true", help="Show collection status dashboard and exit")
     p.set_defaults(func=_cmd_collect)
 
 
@@ -237,14 +238,26 @@ def _review_enrichments(categories, results):
 
 def _cmd_collect(args):
     from classivore.collection import audit_domains, run_collection
+    from classivore.collection.dashboard import format_status_dashboard
+    from classivore.collection.domains import DomainTracker
+    from classivore.collection.state import CollectionState
     from classivore.config.settings import get_data_dir, load_taxonomy_config
-    from classivore.taxonomy.loader import load_taxonomy
 
     config = load_taxonomy_config(args.taxonomy)
     data_dir = get_data_dir(args.data_dir)
 
     if args.audit_domains:
         print(audit_domains(data_dir))
+        return
+
+    if args.status:
+        from pathlib import Path
+        collection_dir = Path(data_dir) / "collection" / config.slug
+        shared_dir = Path(data_dir) / "collection"
+        corpus_file = Path(data_dir) / "corpus" / "pages.json"
+        state = CollectionState(collection_dir)
+        domains = DomainTracker(shared_dir)
+        print(format_status_dashboard(state, domains, corpus_file=corpus_file, taxonomy_slug=config.slug))
         return
 
     # Load enriched taxonomy if available
