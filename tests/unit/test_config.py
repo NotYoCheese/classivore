@@ -47,6 +47,23 @@ class TestTaxonomyConfig:
         config = load_taxonomy_config("iab-2.2")
         assert config.enrichment_max_tokens == 150
 
+    def test_labeling_settings_loaded(self):
+        """Labeling settings load from config."""
+        config = load_taxonomy_config("iab-2.2")
+        assert config.labeling_model == "claude-haiku-4-5-20251001"
+        assert config.stage1_max_tokens == 150
+        assert config.stage2_max_tokens == 300
+        assert config.tier1_confidence_threshold == 0.3
+        assert config.labeling_temperature == 0.0
+        assert config.text_truncation_words == 3000
+
+    def test_excluded_tier1_categories_loaded(self):
+        """Excluded tier-1 categories load from config."""
+        config = load_taxonomy_config("iab-2.2")
+        assert "Content Language" in config.excluded_tier1_categories
+        assert "Content Source Geo" in config.excluded_tier1_categories
+        assert len(config.excluded_tier1_categories) == 6
+
     def test_collection_settings_loaded(self):
         """Collection settings load from config."""
         config = load_taxonomy_config("iab-2.2")

@@ -34,6 +34,24 @@ enrichment:
   model: "claude-haiku-4-5-20251001"
   max_tokens_per_category: 150
 
+# Labeling settings
+labeling:
+  model: "claude-haiku-4-5-20251001"
+  stage1_max_tokens: 150
+  stage2_max_tokens: 300
+  tier1_confidence_threshold: 0.3
+  temperature: 0.0
+  text_truncation_words: 3000
+
+# Metadata tier-1 categories excluded from content labeling
+excluded_tier1_categories:
+  - "Content Language"
+  - "Content Source Geo"
+  - "Content Type"
+  - "Content Channel"
+  - "Content Media Format"
+  - "Content Source"
+
 # Collection settings
 collection:
   target_per_category: 7
