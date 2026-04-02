@@ -98,9 +98,12 @@ def _register_validate(subparsers):
 
 
 def _register_label(subparsers):
-    p = subparsers.add_parser("label", help="Label data with LLM")
+    p = subparsers.add_parser("label", help="Label corpus pages with LLM")
     _add_common_args(p)
-    p.add_argument("--provider", choices=["anthropic", "bedrock"], default="anthropic")
+    p.add_argument("--dry-run", action="store_true", help="Show what would be labeled without API calls")
+    p.add_argument("--stage", choices=["1", "2", "all"], default="all", help="Run specific stage (default: all)")
+    p.add_argument("--poll-interval", type=int, default=30, help="Batch poll interval in seconds")
+    p.add_argument("--status", action="store_true", help="Show labeling progress and exit")
     p.set_defaults(func=_cmd_label)
 
 
@@ -326,7 +329,47 @@ def _cmd_validate(args):
 
 
 def _cmd_label(args):
-    print(f"TODO: label data for {args.taxonomy} with {args.provider}")
+    from classivore.config.settings import get_data_dir, load_taxonomy_config
+    from classivore.labeling import run_labeling
+    from classivore.labeling.state import LabelState
+    from classivore.taxonomy.loader import build_hierarchy, load_taxonomy
+
+    config = load_taxonomy_config(args.taxonomy)
+    data_dir = get_data_dir(args.data_dir)
+
+    if args.status:
+        from pathlib import Path
+        state = LabelState(Path(data_dir) / "labels" / config.slug)
+        print(state.summary_str())
+        return
+
+    # Load enriched taxonomy
+    enriched_path = config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+    categories = load_taxonomy(config)
+    hierarchy = build_hierarchy(categories)
+
+    print(f"Taxonomy: {config.name} ({len(categories)} categories)")
+    print(f"Data dir: {data_dir}")
+
+    summary = run_labeling(
+        config=config,
+        categories=categories,
+        hierarchy=hierarchy,
+        data_dir=data_dir,
+        stage=args.stage,
+        dry_run=args.dry_run,
+        poll_interval=args.poll_interval,
+        verbose=args.verbose,
+    )
+
+    print(f"\nLabeling complete:")
+    print(f"  Stage 1: {summary['stage1_complete']} pages triaged")
+    print(f"  Stage 2: {summary['stage2_complete']} pages labeled")
+    print(f"  Errors: {summary['error']}")
 
 
 def _cmd_train(args):
