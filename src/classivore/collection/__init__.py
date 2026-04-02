@@ -2,18 +2,21 @@
 """Collection orchestrator.
 
 Coordinates URL discovery, content retrieval, quality filtering, and corpus
-storage. Manages per-category targets, query cycling, and checkpointing.
+storage. Features per-taxonomy state, circuit breaker, graceful SIGINT handling,
+and automatic search provider fallback.
 
 Flow:
-1. Load enriched taxonomy, collection state, existing corpus hashes, domain blocklist
-2. Distribute page targets across leaf categories
-3. For each unsatisfied category: generate queries → search → retrieve → filter → save
-4. Checkpoint state after each query cycle
+1. Load enriched taxonomy, collection state (per-taxonomy), corpus hashes, domain blocklist
+2. Seed category counts from existing labels if available
+3. Distribute page targets across leaf categories
+4. For each unsatisfied category: generate queries → search → retrieve → filter → save
+5. Checkpoint state after each query cycle
 """
 
 import json
 import logging
-import os
+import signal
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -23,10 +26,22 @@ from classivore.collection.domains import DomainTracker
 from classivore.collection.filters import content_hash, filter_page, is_url_blocked
 from classivore.collection.queries import generate_template_queries
 from classivore.collection.scraper import extract_text, fetch_page
-from classivore.collection.search import search_brave
+from classivore.collection.search import SearchClient
 from classivore.collection.state import CollectionState
 
 logger = logging.getLogger(__name__)
+
+CIRCUIT_BREAKER_THRESHOLD = 5
+CIRCUIT_BREAKER_PAUSE = 60
+
+# Global interrupt flag for SIGINT handling
+_interrupted = False
+
+
+def _sigint_handler(signum, frame):
+    global _interrupted
+    _interrupted = True
+    logger.warning("Interrupt received, finishing current operation and saving state...")
 
 
 def run_collection(config, categories, data_dir, pages=None, resume=True,
@@ -45,16 +60,22 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     Returns:
         Summary dict with collection statistics.
     """
+    global _interrupted
+    _interrupted = False
+
     if verbose:
         logging.basicConfig(level=logging.INFO)
 
-    collection_dir = Path(data_dir) / "collection"
+    # Per-taxonomy state directory
+    collection_dir = Path(data_dir) / "collection" / config.slug
+    # Shared directories
+    shared_collection_dir = Path(data_dir) / "collection"
     corpus_dir = Path(data_dir) / "corpus"
     corpus_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize state and domain tracker
+    # Initialize state (per-taxonomy) and domain tracker (shared)
     state = CollectionState(collection_dir)
-    domains = DomainTracker(collection_dir)
+    domains = DomainTracker(shared_collection_dir)
 
     # Load existing content hashes for dedup
     corpus_file = corpus_dir / "pages.json"
@@ -75,84 +96,148 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     for cat in leaf_cats:
         state.init_category(cat["name"], target=target)
 
-    # Get Brave API key
-    brave_api_key = os.getenv("BRAVE_API_KEY", "")
-    if not brave_api_key and not queries_only:
-        logger.warning("BRAVE_API_KEY not set — search will fail")
+    # Seed from existing labels if available
+    _seed_from_labels(state, data_dir, config.slug)
+
+    # Initialize search client
+    search_client = SearchClient.from_config(config)
+    if not queries_only and search_client.active_provider_count == 0:
+        logger.warning("No search providers configured — search will fail")
+
+    # Install SIGINT handler
+    prev_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, _sigint_handler)
 
     # Main collection loop
     collected_pages = []
-    for cat in leaf_cats:
-        if state.is_satisfied(cat["name"]):
-            continue
+    consecutive_failures = 0
 
-        # Generate template queries
-        tried = set(state.categories[cat["name"]]["queries_tried"])
-        queries = generate_template_queries(cat, tried=tried)
-
-        if not queries:
-            logger.info("No new queries for %s", cat["name"])
-            continue
-
-        for query in queries:
-            if state.is_satisfied(cat["name"]):
-                break
-
-            if state.has_query(cat["name"], query):
+    try:
+        for cat in leaf_cats:
+            if _interrupted or state.is_satisfied(cat["name"]):
                 continue
 
-            state.record_query(cat["name"], query)
+            # Generate template queries
+            tried = set(state.categories[cat["name"]]["queries_tried"])
+            queries = generate_template_queries(cat, tried=tried)
 
-            if queries_only:
-                logger.info("Query [%s]: %s", cat["name"], query)
+            if not queries:
+                logger.info("No new queries for %s", cat["name"])
                 continue
 
-            # Search
-            results = search_brave(query, api_key=brave_api_key)
-
-            for result in results:
-                if state.is_satisfied(cat["name"]):
+            for query in queries:
+                if _interrupted or state.is_satisfied(cat["name"]):
                     break
 
-                url = result["url"]
-
-                # Skip known URLs
-                if state.is_url_known(url):
+                if state.has_query(cat["name"], query):
                     continue
 
-                # URL blocklist check
-                block_reason = is_url_blocked(url)
-                if block_reason:
-                    state.record_url(url, cat["name"], "filtered", "search")
+                if queries_only:
+                    state.record_query(cat["name"], query)
+                    logger.info("Query [%s]: %s", cat["name"], query)
                     continue
 
-                # Domain checks
-                domain = urlparse(url).netloc
-                if domains.is_blocked(domain):
-                    state.record_url(url, cat["name"], "filtered", "search")
+                # Search
+                results = search_client.search(query)
+
+                if results is None:
+                    # Transient failure — don't record query, increment circuit breaker
+                    consecutive_failures += 1
+                    state.record_search_error()
+                    logger.warning("Search failed (consecutive: %d)", consecutive_failures)
+
+                    if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
+                        logger.warning(
+                            "Circuit breaker: %d consecutive failures, pausing %ds",
+                            consecutive_failures, CIRCUIT_BREAKER_PAUSE,
+                        )
+                        _save_checkpoint(state, domains, collected_pages, corpus_file)
+                        collected_pages = []
+                        time.sleep(CIRCUIT_BREAKER_PAUSE)
+                        consecutive_failures = 0
+                        search_client.reset_exhausted()
                     continue
 
-                if state.get_domain_count(cat["name"], domain) >= config.max_per_domain_per_category:
-                    continue
+                # Search succeeded (even if empty) — record query, reset circuit breaker
+                consecutive_failures = 0
+                state.record_query(cat["name"], query)
 
-                # Retrieve content: Common Crawl first, then live scrape
-                page = _retrieve_and_filter(
-                    url, cat["name"], config, state, domains, seen_hashes,
-                )
+                for result in results:
+                    if _interrupted or state.is_satisfied(cat["name"]):
+                        break
 
-                if page:
-                    collected_pages.append(page)
+                    url = result["url"]
 
-            # Checkpoint after each query cycle
-            _save_checkpoint(state, domains, collected_pages, corpus_file)
-            collected_pages = []
+                    # Skip known URLs
+                    if state.is_url_known(url):
+                        continue
 
-    # Final save
-    _save_checkpoint(state, domains, collected_pages, corpus_file)
-    state.save()
-    domains.save()
+                    # URL blocklist check
+                    block_reason = is_url_blocked(url)
+                    if block_reason:
+                        state.record_url(url, cat["name"], "filtered", "search")
+                        continue
+
+                    # Domain checks
+                    domain = urlparse(url).netloc
+                    if domains.is_blocked(domain):
+                        state.record_url(url, cat["name"], "filtered", "search")
+                        continue
+
+                    if state.get_domain_count(cat["name"], domain) >= config.max_per_domain_per_category:
+                        continue
+
+                    # Retrieve content: Common Crawl first, then live scrape
+                    page = _retrieve_and_filter(
+                        url, cat["name"], config, state, domains, seen_hashes,
+                    )
+
+                    if page:
+                        collected_pages.append(page)
+
+                # Checkpoint after each query cycle
+                _save_checkpoint(state, domains, collected_pages, corpus_file)
+                collected_pages = []
+
+    finally:
+        # Always save on exit (normal, interrupt, or exception)
+        _save_checkpoint(state, domains, collected_pages, corpus_file)
+        state.save()
+        domains.save()
+        signal.signal(signal.SIGINT, prev_handler)
 
     return state.summary()
+
+
+def _seed_from_labels(state, data_dir, taxonomy_slug):
+    """Seed category collected counts from existing labels.
+
+    If labels exist for this taxonomy, count labeled pages per category
+    and update state counts (only if greater than current).
+    """
+    labels_file = Path(data_dir) / "labels" / taxonomy_slug / "labels.json"
+    if not labels_file.exists():
+        return
+
+    try:
+        label_counts = {}
+        with open(labels_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                for cat_name in entry.get("categories", []):
+                    label_counts[cat_name] = label_counts.get(cat_name, 0) + 1
+
+        for name, count in label_counts.items():
+            cat = state.categories.get(name)
+            if cat and count > cat["collected"]:
+                cat["collected"] = count
+                logger.info("Seeded %s with %d labeled pages", name, count)
+
+    except Exception as e:
+        logger.warning("Failed to load labels for seeding: %s", e)
 
 
 def _retrieve_and_filter(url, category, config, state, domains, seen_hashes):
