@@ -55,7 +55,35 @@ def parse_stage1_response(message):
         return data.get("categories", [])
     except (json.JSONDecodeError, AttributeError, TypeError) as e:
         logger.warning("Stage 1 parse error: %s", e)
-        return []
+        # Attempt to salvage truncated JSON
+        try:
+            text = _extract_text(message)
+            return _salvage_truncated_categories(text)
+        except Exception:
+            return []
+
+
+def _salvage_truncated_categories(text):
+    """Extract valid category entries from truncated JSON.
+
+    When max_tokens cuts off the response mid-JSON, extract any complete
+    {"name": "...", "confidence": ...} objects that appear before the truncation.
+    """
+    results = []
+    for match in re.finditer(
+        r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"confidence"\s*:\s*([\d.]+)\s*\}',
+        text,
+    ):
+        name = match.group(1)
+        try:
+            confidence = float(match.group(2))
+        except ValueError:
+            continue
+        results.append({"name": name, "confidence": confidence})
+
+    if results:
+        logger.info("Salvaged %d categories from truncated JSON", len(results))
+    return results
 
 
 def parse_stage2_response(message, valid_names, min_confidence=0.5, max_labels=3):

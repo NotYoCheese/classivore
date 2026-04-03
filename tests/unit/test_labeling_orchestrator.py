@@ -161,6 +161,43 @@ class TestStage2:
         assert mock_submit.call_count == 2
 
 
+class TestStage1Validation:
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_drops_hallucinated_tier1_names(self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path):
+        """Invalid tier-1 names are filtered out, valid ones kept."""
+        _write_corpus(tmp_path, _make_pages(1))
+        mock_client.return_value = MagicMock()
+        mock_submit.return_value = "batch_s1"
+
+        # Response has one valid and one hallucinated tier-1
+        msg = MagicMock()
+        block = MagicMock()
+        block.text = json.dumps({"categories": [
+            {"name": "Automotive", "confidence": 0.9},
+            {"name": "Entertainment", "confidence": 0.7},
+        ]})
+        msg.content = [block]
+        mock_iter.return_value = [("s1-hash0", msg)]
+
+        run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="1",
+        )
+
+        state_file = tmp_path / "labels" / "iab-2.2" / "label_state.json"
+        state = json.loads(state_file.read_text())
+        tier1 = state["pages"]["hash0"]["tier1_categories"]
+        names = [c["name"] for c in tier1]
+        assert "Automotive" in names
+        assert "Entertainment" not in names
+
+
 class TestResume:
     @patch("classivore.labeling.iter_succeeded_results")
     @patch("classivore.labeling.poll_until_complete")

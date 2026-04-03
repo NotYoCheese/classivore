@@ -97,10 +97,13 @@ def build_stage1_system(tier1_categories):
 
     taxonomy_section = "\n\n".join(cat_xml)
 
+    # Build the valid names list for emphasis
+    valid_names = ", ".join(f'"{c["name"]}"' for c in tier1_categories)
+
     return f"""You are an expert content categorizer. Identify which top-level content categories are relevant to the given web page.
 
 <taxonomy>
-Below are the {len(tier1_categories)} top-level content categories with descriptions and boundaries.
+Below are the ONLY {len(tier1_categories)} valid top-level content categories. You MUST NOT use any category name that is not in this list.
 
 {taxonomy_section}
 </taxonomy>
@@ -110,11 +113,12 @@ Below are the {len(tier1_categories)} top-level content categories with descript
 2. Identify ALL top-level categories relevant to the content, even tangentially.
 3. Assign a confidence score from 0.0 to 1.0 for each relevant category.
 4. Include any category with confidence >= 0.2. Err on inclusion — missing a relevant category is worse than including an extra one.
-5. Respond with ONLY a JSON object. No markdown, no commentary.
+5. CRITICAL: You MUST only use category names that appear EXACTLY as listed in the taxonomy above. The valid names are: {valid_names}. Do NOT invent, abbreviate, or paraphrase category names.
+6. Respond with ONLY a compact single-line JSON object. No indentation, no newlines within the JSON, no markdown.
 </instructions>
 
 <output_format>
-{{"categories": [{{"name": "CategoryName", "confidence": 0.85}}, ...]}}
+{{"categories":[{{"name":"CategoryName","confidence":0.85}}]}}
 </output_format>"""
 
 

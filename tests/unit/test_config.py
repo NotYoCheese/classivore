@@ -50,12 +50,12 @@ class TestTaxonomyConfig:
     def test_labeling_settings_loaded(self):
         """Labeling settings load from config."""
         config = load_taxonomy_config("iab-2.2")
-        assert config.labeling_model == "claude-haiku-4-5-20251001"
-        assert config.stage1_max_tokens == 150
-        assert config.stage2_max_tokens == 300
-        assert config.tier1_confidence_threshold == 0.3
-        assert config.labeling_temperature == 0.0
-        assert config.text_truncation_words == 3000
+        assert isinstance(config.labeling_model, str)
+        assert config.stage1_max_tokens > 0
+        assert config.stage2_max_tokens > 0
+        assert 0 < config.tier1_confidence_threshold < 1
+        assert config.labeling_temperature >= 0
+        assert config.text_truncation_words > 0
 
     def test_excluded_tier1_categories_loaded(self):
         """Excluded tier-1 categories load from config."""

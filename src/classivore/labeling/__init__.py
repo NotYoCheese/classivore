@@ -51,7 +51,11 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
         Summary dict with labeling statistics.
     """
     if verbose:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
 
     data_dir = Path(data_dir)
     labels_dir = data_dir / "labels" / config.slug
@@ -129,6 +133,7 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
     logger.info("Stage 1: triaging %d pages across %d tier-1 categories", len(needing), len(tier1_categories))
 
     system_prompt = build_stage1_system(tier1_categories)
+    valid_tier1_names = {c["name"] for c in tier1_categories}
 
     # Build batch requests
     requests = []
@@ -174,11 +179,15 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
             content_hash = custom_id.removeprefix("s1-")
             tier1_cats = parse_stage1_response(message)
 
-            # Filter by confidence threshold
-            filtered = [
-                c for c in tier1_cats
-                if c.get("confidence", 0) >= config.tier1_confidence_threshold
-            ]
+            # Validate names and filter by confidence threshold
+            filtered = []
+            for c in tier1_cats:
+                name = c.get("name", "")
+                if name not in valid_tier1_names:
+                    logger.warning("Stage 1: dropping invalid tier-1 name: %s", name)
+                    continue
+                if c.get("confidence", 0) >= config.tier1_confidence_threshold:
+                    filtered.append(c)
 
             if filtered:
                 state.complete_stage1(content_hash, filtered)

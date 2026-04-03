@@ -366,10 +366,12 @@ def _cmd_label(args):
         verbose=args.verbose,
     )
 
+    triaged = summary["stage1_complete"] + summary["stage2_complete"]
     print(f"\nLabeling complete:")
-    print(f"  Stage 1: {summary['stage1_complete']} pages triaged")
-    print(f"  Stage 2: {summary['stage2_complete']} pages labeled")
-    print(f"  Errors: {summary['error']}")
+    print(f"  Triaged:  {triaged} pages")
+    print(f"  Labeled:  {summary['stage2_complete']} pages")
+    print(f"  Pending:  {summary['unlabeled']} pages")
+    print(f"  Errors:   {summary['error']}")
 
 
 def _cmd_train(args):

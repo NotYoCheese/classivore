@@ -75,7 +75,7 @@ class TaxonomyConfig:
         labeling = self._raw.get("labeling", {})
         self.labeling_model: str = labeling.get("model", "claude-haiku-4-5-20251001")
         self.stage1_max_tokens: int = labeling.get("stage1_max_tokens", 150)
-        self.stage2_max_tokens: int = labeling.get("stage2_max_tokens", 300)
+        self.stage2_max_tokens: int = labeling.get("stage2_max_tokens", 500)
         self.tier1_confidence_threshold: float = labeling.get("tier1_confidence_threshold", 0.3)
         self.labeling_temperature: float = labeling.get("temperature", 0.0)
         self.text_truncation_words: int = labeling.get("text_truncation_words", 3000)

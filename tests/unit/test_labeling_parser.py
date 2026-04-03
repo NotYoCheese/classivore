@@ -55,6 +55,15 @@ class TestParseStage1:
         result = parse_stage1_response(msg)
         assert len(result) == 1
 
+    def test_salvages_truncated_json(self):
+        """Truncated JSON should still yield valid entries before the cutoff."""
+        truncated = '{"categories": [{"name": "Automotive", "confidence": 0.9}, {"name": "Science", "confidence": 0.7}, {"name": "News and Politics", "confidence'
+        msg = _make_message(truncated)
+        result = parse_stage1_response(msg)
+        assert len(result) == 2
+        assert result[0]["name"] == "Automotive"
+        assert result[1]["name"] == "Science"
+
     def test_multiple_content_blocks(self):
         msg = MagicMock()
         b1 = MagicMock()

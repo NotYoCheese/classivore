@@ -64,13 +64,25 @@ class TestBuildStage1System:
     def test_includes_category_count(self):
         cats = _make_tier1_categories()
         prompt = build_stage1_system(cats)
-        assert "2 top-level" in prompt
+        assert "2 valid top-level" in prompt
 
     def test_json_output_format(self):
         cats = _make_tier1_categories()
         prompt = build_stage1_system(cats)
         assert '"categories"' in prompt
         assert '"confidence"' in prompt
+
+    def test_lists_valid_names(self):
+        cats = _make_tier1_categories()
+        prompt = build_stage1_system(cats)
+        assert '"Automotive"' in prompt
+        assert '"Science"' in prompt
+        assert "MUST only use category names" in prompt
+
+    def test_emphasizes_no_invention(self):
+        cats = _make_tier1_categories()
+        prompt = build_stage1_system(cats)
+        assert "Do NOT invent" in prompt
 
 
 class TestBuildStage2System:

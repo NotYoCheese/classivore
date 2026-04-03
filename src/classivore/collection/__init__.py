@@ -64,7 +64,11 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     _interrupted = False
 
     if verbose:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
 
     # Per-taxonomy state directory
     collection_dir = Path(data_dir) / "collection" / config.slug
