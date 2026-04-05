@@ -9,9 +9,10 @@ for resume, tier-1 triage results for stage 2 input, and final labels.
 """
 
 import json
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from classivore.persistence import atomic_json_save
 
 
 class LabelState:
@@ -50,16 +51,7 @@ class LabelState:
             "stats": self._compute_stats(),
             "pages": self.pages,
         }
-        fd, tmp_path = tempfile.mkstemp(
-            dir=self.state_dir, prefix=".label_state_", suffix=".tmp"
-        )
-        try:
-            with open(fd, "w") as f:
-                json.dump(data, f, indent=2)
-            Path(tmp_path).replace(self.state_file)
-        except BaseException:
-            Path(tmp_path).unlink(missing_ok=True)
-            raise
+        atomic_json_save(data, self.state_file, directory=self.state_dir)
 
     def init_page(self, content_hash, url):
         """Register a page for labeling if not already tracked."""

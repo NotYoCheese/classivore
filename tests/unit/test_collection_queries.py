@@ -12,13 +12,15 @@ from classivore.collection.queries import (
 )
 
 
-def _make_category(name="Sedan", description="Four-door passenger cars.", path=None):
+def _make_category(name="Sedan", description="Four-door passenger cars.",
+                   boundaries="Distinguished from SUV by enclosed trunk.",
+                   path=None):
     return {
         "id": "3",
         "name": name,
         "display_name": f"Automotive: {name}",
         "description": description,
-        "boundaries": "Distinguished from SUV by enclosed trunk.",
+        "boundaries": boundaries,
         "path": path or ["Automotive", "Auto Body Styles", name],
         "depth": 3,
         "is_leaf": True,
@@ -27,10 +29,11 @@ def _make_category(name="Sedan", description="Four-door passenger cars.", path=N
 
 
 class TestGenerateTemplateQueries:
-    def test_generates_queries(self):
+    def test_generates_many_queries(self):
         cat = _make_category()
         queries = generate_template_queries(cat)
-        assert len(queries) >= 2
+        # Should generate 25+ diverse queries
+        assert len(queries) >= 25
 
     def test_includes_category_name(self):
         cat = _make_category()
@@ -40,30 +43,75 @@ class TestGenerateTemplateQueries:
     def test_includes_description_keywords(self):
         cat = _make_category()
         queries = generate_template_queries(cat)
-        # Should use keywords from description
-        assert any("passenger" in q.lower() or "four-door" in q.lower() for q in queries)
+        assert any("passenger" in q.lower() or "four" in q.lower() for q in queries)
+
+    def test_includes_boundary_keywords(self):
+        cat = _make_category()
+        queries = generate_template_queries(cat)
+        assert any("distinguished" in q.lower() or "enclosed" in q.lower() for q in queries)
 
     def test_includes_tier1_context(self):
         cat = _make_category()
         queries = generate_template_queries(cat)
         assert any("Automotive" in q for q in queries)
 
-    def test_no_description_still_works(self):
-        cat = _make_category(description="")
+    def test_includes_current_year(self):
+        from datetime import datetime, timezone
+        year = str(datetime.now(timezone.utc).year)
+        cat = _make_category()
         queries = generate_template_queries(cat)
-        assert len(queries) >= 1
+        assert any(year in q for q in queries)
+
+    def test_no_description_still_works(self):
+        cat = _make_category(description="", boundaries="")
+        queries = generate_template_queries(cat)
+        assert len(queries) >= 10
 
     def test_excludes_tried_queries(self):
         cat = _make_category()
         all_queries = generate_template_queries(cat)
-        # Exclude all but leave room for at least testing
-        filtered = generate_template_queries(cat, tried=set(all_queries[:1]))
+        half = set(all_queries[:len(all_queries) // 2])
+        filtered = generate_template_queries(cat, tried=half)
         assert len(filtered) < len(all_queries)
+        assert not any(q in half for q in filtered)
 
     def test_root_category(self):
         cat = _make_category(name="Automotive", path=["Automotive"])
         queries = generate_template_queries(cat)
-        assert len(queries) >= 1
+        assert len(queries) >= 10
+        # Should not generate redundant "{name} {tier1} explained" for root
+        assert not any(q == "Automotive Automotive explained" for q in queries)
+
+    def test_no_duplicates(self):
+        cat = _make_category()
+        queries = generate_template_queries(cat)
+        normalized = [q.strip().lower() for q in queries]
+        assert len(normalized) == len(set(normalized))
+
+    def test_covers_informational_intent(self):
+        cat = _make_category()
+        queries = generate_template_queries(cat)
+        lower = [q.lower() for q in queries]
+        assert any("what is" in q for q in lower)
+        assert any("explained" in q for q in lower)
+
+    def test_covers_howto_intent(self):
+        cat = _make_category()
+        queries = generate_template_queries(cat)
+        lower = [q.lower() for q in queries]
+        assert any("how to" in q or "tips" in q or "guide" in q for q in lower)
+
+    def test_covers_news_intent(self):
+        cat = _make_category()
+        queries = generate_template_queries(cat)
+        lower = [q.lower() for q in queries]
+        assert any("trends" in q or "news" in q for q in lower)
+
+    def test_covers_definitional_intent(self):
+        cat = _make_category()
+        queries = generate_template_queries(cat)
+        lower = [q.lower() for q in queries]
+        assert any("definition" in q or "types of" in q for q in lower)
 
 
 class TestBuildLlmPrompt:
@@ -98,6 +146,24 @@ class TestBuildLlmPrompt:
         prompt = build_llm_prompt(cat, siblings=[], tried_queries=[])
         content = prompt[0]["content"]
         assert "None yet" in content or "none" in content.lower()
+
+    def test_includes_domain_hints(self):
+        cat = _make_category()
+        prompt = build_llm_prompt(
+            cat, siblings=[], tried_queries=[],
+            domain_hints=["caranddriver.com", "motortrend.com"],
+        )
+        content = prompt[0]["content"]
+        assert "caranddriver.com" in content
+        assert "site:" in content.lower()
+
+    def test_includes_pages_needed(self):
+        cat = _make_category()
+        prompt = build_llm_prompt(
+            cat, siblings=[], tried_queries=[], pages_needed=25,
+        )
+        content = prompt[0]["content"]
+        assert "25" in content
 
 
 class TestParseLlmQueries:

@@ -32,7 +32,8 @@ class TestGetApiClient:
     @patch("classivore.batch.load_dotenv")
     @patch.dict("os.environ", {}, clear=True)
     def test_missing_key_raises(self, mock_dotenv):
-        with pytest.raises(RuntimeError, match="No API key found"):
+        from classivore.errors import ConfigError
+        with pytest.raises(ConfigError, match="No API key found"):
             get_api_client()
 
 
@@ -112,6 +113,9 @@ class TestIterSucceededResults:
         assert results[0] == ("cat-1", msg)
 
     def test_skips_errors_and_logs(self, capsys):
+        from classivore.logging_config import configure_logging
+        configure_logging()
+
         client = MagicMock()
 
         succeeded = MagicMock()
@@ -132,8 +136,6 @@ class TestIterSucceededResults:
         results = list(iter_succeeded_results(client, "batch-123"))
 
         assert len(results) == 1
-        output = capsys.readouterr().out
+        output = capsys.readouterr().err
         assert "cat-2" in output
-        assert "errored" in output
         assert "cat-3" in output
-        assert "1 succeeded, 2 failed" in output

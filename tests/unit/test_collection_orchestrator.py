@@ -163,7 +163,8 @@ class TestCircuitBreaker:
         """Circuit breaker pauses after CIRCUIT_BREAKER_THRESHOLD consecutive None results."""
         client = MagicMock()
         # Return None enough times to trigger circuit breaker, then empty lists for remaining
-        client.search.side_effect = [None] * 6 + [[]] * 20
+        # With expanded templates, each category generates 30+ queries
+        client.search.side_effect = [None] * 6 + [[]] * 500
         client.active_provider_count = 1
         client.reset_exhausted = MagicMock()
         mock_client_cls.from_config.return_value = client
@@ -189,7 +190,8 @@ class TestCircuitBreaker:
         """Consecutive failure count resets when search succeeds."""
         client = MagicMock()
         # 3 failures, then success, then 3 failures — should NOT trigger circuit breaker
-        client.search.side_effect = [None, None, None, [], None, None, None, []]
+        # Pad with empty results for the many template queries
+        client.search.side_effect = [None, None, None, [], None, None, None] + [[]] * 500
         client.active_provider_count = 1
         client.reset_exhausted = MagicMock()
         mock_client_cls.from_config.return_value = client
@@ -203,11 +205,24 @@ class TestCircuitBreaker:
 
 
 class TestQuerySlotProtection:
+    @patch("classivore.collection.time.sleep")
     @patch("classivore.collection.SearchClient")
-    def test_query_not_recorded_on_transient_failure(self, mock_client_cls, tmp_path):
+    def test_query_not_recorded_on_transient_failure(self, mock_client_cls, mock_sleep, tmp_path):
         """Query is NOT recorded when search returns None (transient failure)."""
+        import classivore.collection as coll
+
         client = MagicMock()
-        client.search.return_value = None
+        call_count = 0
+
+        def search_then_interrupt(query, count=10):
+            nonlocal call_count
+            call_count += 1
+            # Let a few queries fail, then interrupt to stop the loop
+            if call_count >= 6:
+                coll._interrupted = True
+            return None
+
+        client.search.side_effect = search_then_interrupt
         client.active_provider_count = 1
         client.reset_exhausted = MagicMock()
         mock_client_cls.from_config.return_value = client
