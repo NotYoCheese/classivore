@@ -315,15 +315,19 @@ def _cmd_validate(args):
         taxonomy_categories = None
         try:
             config = load_taxonomy_config(args.taxonomy)
-            taxonomy_file = config.taxonomy_file
+            enriched_path = config.enriched_file or (
+                config.taxonomy_file.parent / "taxonomy_enriched.csv"
+            )
+            taxonomy_file = enriched_path if enriched_path.exists() else config.taxonomy_file
             if taxonomy_file.exists():
                 import csv
                 with open(taxonomy_file) as f:
                     reader = csv.DictReader(f)
+                    # Include all categories (leaf and non-leaf) since
+                    # labeling can assign non-leaf categories
                     taxonomy_categories = [
                         row[config.name_column]
                         for row in reader
-                        if row.get("is_leaf", "true").lower() == "true"
                     ]
         except Exception:
             pass  # taxonomy loading is optional for validation
