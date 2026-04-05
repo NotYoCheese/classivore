@@ -73,10 +73,12 @@ def data_dir(tmp_path, corpus_pages, label_entries):
     labels_dir.mkdir()
 
     with open(corpus_dir / "pages.json", "w") as f:
-        json.dump(corpus_pages, f)
+        for page in corpus_pages:
+            f.write(json.dumps(page) + "\n")
 
     with open(labels_dir / "test-taxonomy.json", "w") as f:
-        json.dump(label_entries, f)
+        for entry in label_entries:
+            f.write(json.dumps(entry) + "\n")
 
     return tmp_path
 
@@ -94,8 +96,7 @@ class TestLoader:
 
     def test_load_labeled_data_missing_labels(self, tmp_path):
         (tmp_path / "corpus").mkdir()
-        with open(tmp_path / "corpus" / "pages.json", "w") as f:
-            json.dump([], f)
+        (tmp_path / "corpus" / "pages.json").write_text("")
         with pytest.raises(FileNotFoundError, match="Labels not found"):
             load_labeled_data(tmp_path, "test-taxonomy")
 
