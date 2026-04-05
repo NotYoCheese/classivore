@@ -24,6 +24,25 @@ WARC_BASE_URL = "https://data.commoncrawl.org"
 
 BACKOFF_DELAYS = [2, 4, 8]
 REQUEST_TIMEOUT = 30
+PROBE_TIMEOUT = 5
+
+
+def probe_cdx(crawl_id):
+    """Quick health check on CDX index. Returns True if responsive.
+
+    Sends a minimal query with a short timeout. Used to skip CDX
+    for an entire category if the service is down or degraded.
+    """
+    endpoint = f"{CDX_BASE_URL}/{crawl_id}-index"
+    try:
+        resp = requests.get(
+            endpoint,
+            params={"url": "example.com", "output": "json", "limit": 1},
+            timeout=PROBE_TIMEOUT,
+        )
+        return resp.status_code == 200
+    except requests.RequestException:
+        return False
 
 
 def parse_cdx_response(text):

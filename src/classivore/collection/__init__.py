@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from classivore.collection.commoncrawl import fetch_warc_record, lookup_cdx
+from classivore.collection.commoncrawl import fetch_warc_record, lookup_cdx, probe_cdx
 from classivore.collection.domains import DomainTracker
 from classivore.collection.filters import content_hash, filter_page, is_url_blocked
 from classivore.collection.queries import (
@@ -116,11 +116,18 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     # Main collection loop
     collected_pages = []
     consecutive_failures = 0
+    cdx_available = None  # None = not yet checked
 
     try:
         for cat in leaf_cats:
             if _interrupted or state.is_satisfied(cat["name"]):
                 continue
+
+            # Probe CDX health once per category
+            if config.commoncrawl_crawl_id:
+                cdx_available = probe_cdx(config.commoncrawl_crawl_id)
+                if not cdx_available:
+                    logger.info("cdx_unavailable_skipping", category=cat["name"])
 
             tried = set(state.categories[cat["name"]]["queries_tried"])
 
@@ -200,9 +207,10 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
                     if state.get_domain_count(cat["name"], domain) >= config.max_per_domain_per_category:
                         continue
 
-                    # Retrieve content: Common Crawl first, then live scrape
+                    # Retrieve content: Common Crawl first (if available), then live scrape
                     page = _retrieve_and_filter(
                         url, cat["name"], config, state, domains, seen_hashes,
+                        use_cdx=cdx_available,
                     )
 
                     if page:
@@ -324,13 +332,14 @@ def _seed_from_labels(state, data_dir, taxonomy_slug):
         logger.warning("label_seeding_failed", error=str(e))
 
 
-def _retrieve_and_filter(url, category, config, state, domains, seen_hashes):
+def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,
+                         use_cdx=True):
     """Try to retrieve and filter a single URL. Returns page dict or None."""
     html = None
     source = "commoncrawl"
 
-    # Try Common Crawl first
-    if config.commoncrawl_crawl_id:
+    # Try Common Crawl first (if CDX is available)
+    if use_cdx and config.commoncrawl_crawl_id:
         records = lookup_cdx(url, crawl_id=config.commoncrawl_crawl_id)
         if records:
             html = fetch_warc_record(records[0])
