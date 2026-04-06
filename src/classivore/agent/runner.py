@@ -127,7 +127,7 @@ def run_agent(
 
         # Collect
         collection_summary = _run_collection(
-            config, categories, data_dir, plan, verbose,
+            config, categories, data_dir, plan, target, verbose,
         )
 
         # Label
@@ -207,7 +207,7 @@ def _plan_iteration(report, config, iteration):
     )
 
 
-def _run_collection(config, categories, data_dir, plan, verbose):
+def _run_collection(config, categories, data_dir, plan, agent_target, verbose):
     """Run targeted collection for gap categories."""
     from classivore.collection import run_collection
 
@@ -230,11 +230,9 @@ def _run_collection(config, categories, data_dir, plan, verbose):
     modified_config.excluded_categories = list(
         set(config.excluded_categories) | non_target
     )
-    # Set per-category target based on plan
-    if plan.target_categories:
-        modified_config.target_per_category = max(
-            1, plan.pages_to_collect // len(plan.target_categories),
-        )
+    # Use the agent's target (e.g. 50 from --target). This must exceed
+    # the seeded label counts so collection knows there's still work to do.
+    modified_config.target_per_category = agent_target
 
     # Use LLM queries on iteration 1+ (hybrid strategy)
     use_llm = plan.strategy == "hybrid"
