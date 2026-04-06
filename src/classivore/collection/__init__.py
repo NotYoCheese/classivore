@@ -51,7 +51,7 @@ def _sigint_handler(signum, frame):
 
 def run_collection(config, categories, data_dir, resume=True,
                    queries_only=False, use_llm_queries=False,
-                   category_targets=None, verbose=False):
+                   category_targets=None, fresh_state=False, verbose=False):
     """Run the collection pipeline.
 
     Args:
@@ -80,6 +80,11 @@ def run_collection(config, categories, data_dir, resume=True,
     corpus_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize state (per-taxonomy) and domain tracker (shared)
+    # fresh_state: start with clean query/category tracking (agent mode)
+    # Domain scores persist regardless (separate file, shared across runs)
+    if fresh_state:
+        state_file = collection_dir / "state.json"
+        state_file.unlink(missing_ok=True)
     state = CollectionState(collection_dir)
     domains = DomainTracker(shared_collection_dir)
 

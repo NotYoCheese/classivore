@@ -75,16 +75,22 @@ class AgentState:
             self.save()
         return len(self.iterations)
 
-    def should_stop(self, config: AgentConfig) -> tuple[bool, str]:
+    def should_stop(self, config: AgentConfig, start_iteration: int = 0) -> tuple[bool, str]:
         """Evaluate stop conditions.
+
+        Args:
+            config: AgentConfig with stop thresholds.
+            start_iteration: Iteration count at the start of this session.
+                Used to make max_iterations relative (run N more).
 
         Returns:
             Tuple of (should_stop, reason).
         """
         completed = [i for i in self.iterations if i.get("result") is not None]
 
-        # Max iterations
-        if len(completed) >= config.max_iterations:
+        # Max iterations is relative to start of this session
+        iterations_this_session = len(completed) - start_iteration
+        if iterations_this_session >= config.max_iterations:
             return True, f"max iterations reached ({config.max_iterations})"
 
         # All categories satisfied (check last iteration)

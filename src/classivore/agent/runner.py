@@ -91,13 +91,14 @@ def run_agent(
 
     # Load agent state (supports resume)
     agent_state = AgentState(agent_dir)
+    start_iteration = agent_state.current_iteration()
 
-    # Main loop
-    for i in range(agent_state.current_iteration(), max_iterations):
+    # Main loop — max_iterations is relative (run N more from now)
+    for i in range(start_iteration, start_iteration + max_iterations):
         structlog.contextvars.bind_contextvars(iteration=i)
 
         # Check stop conditions
-        should_stop, reason = agent_state.should_stop(agent_config)
+        should_stop, reason = agent_state.should_stop(agent_config, start_iteration)
         if should_stop:
             logger.info("agent_stopped", reason=reason)
             break
@@ -206,6 +207,7 @@ def _run_collection(config, categories, data_dir, plan, category_targets, verbos
             resume=True,
             use_llm_queries=plan.use_llm_queries,
             category_targets=category_targets,
+            fresh_state=True,
             verbose=verbose,
         )
         return summary

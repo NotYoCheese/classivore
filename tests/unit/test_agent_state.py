@@ -87,9 +87,23 @@ class TestStopConditions:
             state.start_iteration(_make_plan(i))
             state.complete_iteration(_make_result(i))
 
-        should_stop, reason = state.should_stop(config)
+        should_stop, reason = state.should_stop(config, start_iteration=0)
         assert should_stop
         assert "max iterations" in reason
+
+    def test_max_iterations_is_relative(self, tmp_path):
+        """Previous iterations don't count toward the limit."""
+        state = AgentState(tmp_path / "agent")
+        config = AgentConfig(max_iterations=1)
+
+        # 3 iterations from a previous session
+        for i in range(3):
+            state.start_iteration(_make_plan(i))
+            state.complete_iteration(_make_result(i))
+
+        # New session starts at iteration 3 — hasn't done any yet
+        should_stop, reason = state.should_stop(config, start_iteration=3)
+        assert not should_stop
 
     def test_all_satisfied(self, tmp_path):
         state = AgentState(tmp_path / "agent")
