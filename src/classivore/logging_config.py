@@ -66,7 +66,7 @@ def configure_logging(verbose: bool = False, json_output: bool = False) -> None:
 
     # Suppress noisy third-party loggers
     logging.getLogger("trafilatura").setLevel(logging.ERROR)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
     logging.getLogger("htmldate").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

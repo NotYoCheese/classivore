@@ -70,8 +70,11 @@ def parse_cdx_response(text):
         if record.get("status", "200") != "200":
             continue
 
-        record["offset"] = int(record["offset"])
-        record["length"] = int(record["length"])
+        try:
+            record["offset"] = int(record["offset"])
+            record["length"] = int(record["length"])
+        except (ValueError, KeyError):
+            continue
         records.append(record)
 
     return records
