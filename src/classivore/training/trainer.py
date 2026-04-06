@@ -217,15 +217,19 @@ def train_model(config, data_dir, output_dir=None, device=None,
     tokenizer.save_pretrained(str(output_dir))
 
     # Save label mappings
+    categories = _load_categories(config)
+    name_to_id = {c["name"]: c["id"] for c in categories}
     label_mappings = {
         "id_to_index": {
-            str(next(int(c["id"]) for c in _load_categories(config) if c["name"] == name)): i
+            name_to_id[name]: i
             for i, name in enumerate(data["label_names"])
+            if name in name_to_id
         },
         "index_to_name": {str(i): name for i, name in enumerate(data["label_names"])},
         "index_to_id": {
-            str(i): str(next(int(c["id"]) for c in _load_categories(config) if c["name"] == name))
+            str(i): name_to_id[name]
             for i, name in enumerate(data["label_names"])
+            if name in name_to_id
         },
     }
     with open(output_dir / "label_mappings.json", "w") as f:
@@ -263,11 +267,75 @@ def train_model(config, data_dir, output_dir=None, device=None,
 
     logger.info("model_saved", path=str(output_dir))
 
+    # ── Quality report ──
+    from classivore.training.evaluate import (
+        build_quality_report,
+        get_predictions,
+        print_quality_report,
+        save_quality_report,
+    )
+    from classivore.training.thresholds import (
+        optimize_global_threshold,
+        optimize_per_category_thresholds,
+        save_thresholds,
+    )
+
+    logger.info("running_quality_evaluation")
+
+    # Get predictions on val and test
+    val_probs = get_predictions(
+        model, tokenizer, splits["val"]["texts"],
+        batch_size=bs * 2, max_length=max_length, device=device_name,
+    )
+    test_probs = get_predictions(
+        model, tokenizer, splits["test"]["texts"],
+        batch_size=bs * 2, max_length=max_length, device=device_name,
+    )
+
+    # Save raw probabilities for future analysis
+    np.save(output_dir / "val_probs.npy", val_probs)
+    np.save(output_dir / "test_probs.npy", test_probs)
+
+    # Optimize thresholds on val set
+    val_labels = splits["val"]["label_matrix"]
+    global_t, _ = optimize_global_threshold(val_probs, val_labels)
+    per_cat_thresholds = optimize_per_category_thresholds(
+        val_probs, val_labels, data["label_names"], global_threshold=global_t,
+    )
+    save_thresholds(per_cat_thresholds, output_dir)
+
+    # Compute train F1 for overfitting detection
+    train_probs = get_predictions(
+        model, tokenizer, splits["train"]["texts"][:2000],  # Sample for speed
+        batch_size=bs * 2, max_length=max_length, device=device_name,
+    )
+    train_preds = (train_probs > 0.5).astype(int)
+    train_labels_sample = splits["train"]["label_matrix"][:2000]
+    from sklearn.metrics import f1_score as _f1
+    train_f1 = float(_f1(train_labels_sample, train_preds, average="micro", zero_division=0))
+
+    # Build and save quality report
+    quality_report = build_quality_report(
+        test_probs=test_probs,
+        test_labels=splits["test"]["label_matrix"],
+        label_names=data["label_names"],
+        categories=categories,
+        thresholds=per_cat_thresholds,
+        global_threshold=global_t,
+        model_path=output_dir,
+        taxonomy_slug=config.slug,
+        train_f1_micro=train_f1,
+        val_f1_micro=val_metrics.get("eval_f1_micro"),
+    )
+    save_quality_report(quality_report, output_dir)
+    print_quality_report(quality_report)
+
     return {
         "model_path": str(output_dir),
         "metrics": val_metrics,
         "training_time": int(training_time),
         "report": report,
+        "quality_report": quality_report,
     }
 
 
