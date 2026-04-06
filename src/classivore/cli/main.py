@@ -83,7 +83,6 @@ def _register_enrich(subparsers):
 def _register_collect(subparsers):
     p = subparsers.add_parser("collect", help="Collect training data")
     _add_common_args(p)
-    p.add_argument("--pages", type=int, default=None, help="Total pages to collect (distributed across categories)")
     p.add_argument("--resume", action="store_true", default=True, help="Resume from existing state (default)")
     p.add_argument("--no-resume", action="store_true", help="Start fresh, ignoring existing state")
     p.add_argument("--queries-only", action="store_true", help="Generate queries without fetching content")
@@ -270,9 +269,16 @@ def _cmd_collect(args):
         collection_dir = Path(data_dir) / "collection" / config.slug
         shared_dir = Path(data_dir) / "collection"
         corpus_file = Path(data_dir) / "corpus" / "pages.json"
+        labels_dir = Path(data_dir) / "labels" / config.slug
         state = CollectionState(collection_dir)
         domains = DomainTracker(shared_dir)
-        print(format_status_dashboard(state, domains, corpus_file=corpus_file, taxonomy_slug=config.slug))
+        print(format_status_dashboard(
+            state, domains,
+            corpus_file=corpus_file,
+            taxonomy_slug=config.slug,
+            labels_dir=labels_dir,
+            target_per_category=config.target_per_category,
+        ))
         return
 
     # Load enriched taxonomy if available
@@ -292,7 +298,6 @@ def _cmd_collect(args):
         config=config,
         categories=categories,
         data_dir=data_dir,
-        pages=args.pages,
         resume=resume,
         queries_only=args.queries_only,
         verbose=args.verbose,

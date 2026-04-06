@@ -49,17 +49,21 @@ def _sigint_handler(signum, frame):
     logger.warning("interrupt_received")
 
 
-def run_collection(config, categories, data_dir, pages=None, resume=True,
-                   queries_only=False, use_llm_queries=False, verbose=False):
+def run_collection(config, categories, data_dir, resume=True,
+                   queries_only=False, use_llm_queries=False,
+                   category_targets=None, verbose=False):
     """Run the collection pipeline.
 
     Args:
         config: TaxonomyConfig instance.
         categories: List of category dicts (from load_taxonomy).
         data_dir: Path to data directory.
-        pages: Total pages to collect (distributed across categories).
         resume: Whether to resume from existing state.
         queries_only: If True, generate and log queries without fetching.
+        use_llm_queries: If True, use LLM to generate queries when templates exhausted.
+        category_targets: Optional dict of {category_name: pages_to_collect}.
+            When provided, each category gets its own target. When None
+            (standalone mode), falls back to config.target_per_category.
         verbose: Enable verbose logging.
 
     Returns:
@@ -90,16 +94,12 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
         if c["is_leaf"] and c["display_name"] not in excluded
     ]
 
-    # Compute per-category targets
-    target = config.target_per_category
-    if pages:
-        target = max(1, pages // len(leaf_cats)) if leaf_cats else 0
-
+    # Initialize per-category targets
     for cat in leaf_cats:
-        state.init_category(cat["name"], target=target)
-
-    # Seed from existing labels if available
-    _seed_from_labels(state, data_dir, config.slug)
+        cat_target = (category_targets or {}).get(
+            cat["name"], config.target_per_category,
+        )
+        state.init_category(cat["name"], target=cat_target)
 
     # Initialize search client
     search_client = SearchClient.from_config(config)
@@ -306,30 +306,6 @@ def _generate_llm_queries(cat, categories, config, tried, queries_only):
         return []
 
 
-def _seed_from_labels(state, data_dir, taxonomy_slug):
-    """Seed category collected counts from existing labels.
-
-    If labels exist for this taxonomy, count labeled pages per category
-    and update state counts (only if greater than current).
-    """
-    labels_file = Path(data_dir) / "labels" / taxonomy_slug / "labels.json"
-    if not labels_file.exists():
-        return
-
-    try:
-        label_counts = {}
-        for entry in iter_ndjson(labels_file):
-            for cat_name in entry.get("categories", []):
-                label_counts[cat_name] = label_counts.get(cat_name, 0) + 1
-
-        for name, count in label_counts.items():
-            cat = state.categories.get(name)
-            if cat and count > cat["collected"]:
-                cat["collected"] = count
-                logger.info("seeded_from_labels", category=name, count=count)
-
-    except Exception as e:
-        logger.warning("label_seeding_failed", error=str(e))
 
 
 def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,

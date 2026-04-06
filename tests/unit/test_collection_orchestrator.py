@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from classivore.collection import run_collection, _seed_from_labels
+from classivore.collection import run_collection
 
 
 def _make_config(slug="iab-2.2"):
@@ -69,7 +69,7 @@ class TestRunCollection:
         mock_fetch.side_effect = [f"<html><body><p>{words1}</p></body></html>", f"<html><body><p>{words2}</p></body></html>"]
         mock_extract.side_effect = [words1, words2]
 
-        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path, pages=2)
+        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path)
 
         assert summary["total_collected"] == 2
         assert summary["satisfied_categories"] == 1
@@ -109,7 +109,7 @@ class TestRunCollection:
         config = _make_config()
         config.target_per_category = 1
 
-        summary = run_collection(config=config, categories=_make_categories(), data_dir=tmp_path, pages=1)
+        summary = run_collection(config=config, categories=_make_categories(), data_dir=tmp_path)
         assert summary["total_collected"] == 1
 
     @patch("classivore.collection.extract_text")
@@ -125,7 +125,7 @@ class TestRunCollection:
         mock_fetch.return_value = f"<html><body><p>{words}</p></body></html>"
         mock_extract.return_value = words
 
-        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path, pages=2)
+        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path)
         assert summary["total_collected"] == 1
 
     def test_excludes_configured_categories(self, tmp_path):
@@ -278,57 +278,6 @@ class TestSIGINT:
         state = json.loads(state_file.read_text())
         assert "categories" in state
 
-
-class TestLabelSeeding:
-    def test_seeds_from_labels(self, tmp_path):
-        """Label counts are used to pre-populate collected counts."""
-        from classivore.collection.state import CollectionState
-
-        # Create state with categories
-        state = CollectionState(tmp_path / "collection" / "iab-2.2")
-        state.init_category("Sedan", target=50)
-        state.init_category("SUV", target=50)
-
-        # Create labels file
-        labels_dir = tmp_path / "labels" / "iab-2.2"
-        labels_dir.mkdir(parents=True)
-        with open(labels_dir / "labels.json", "w") as f:
-            for _ in range(10):
-                f.write(json.dumps({"categories": ["Sedan"]}) + "\n")
-            for _ in range(3):
-                f.write(json.dumps({"categories": ["SUV"]}) + "\n")
-
-        _seed_from_labels(state, tmp_path, "iab-2.2")
-
-        assert state.categories["Sedan"]["collected"] == 10
-        assert state.categories["SUV"]["collected"] == 3
-
-    def test_seeding_only_increases(self, tmp_path):
-        """Seeding doesn't decrease existing collected counts."""
-        from classivore.collection.state import CollectionState
-
-        state = CollectionState(tmp_path / "collection" / "iab-2.2")
-        state.init_category("Sedan", target=50)
-        state.categories["Sedan"]["collected"] = 20
-
-        labels_dir = tmp_path / "labels" / "iab-2.2"
-        labels_dir.mkdir(parents=True)
-        with open(labels_dir / "labels.json", "w") as f:
-            for _ in range(5):
-                f.write(json.dumps({"categories": ["Sedan"]}) + "\n")
-
-        _seed_from_labels(state, tmp_path, "iab-2.2")
-
-        assert state.categories["Sedan"]["collected"] == 20  # Not reduced to 5
-
-    def test_no_labels_file_no_error(self, tmp_path):
-        """Missing labels file doesn't cause errors."""
-        from classivore.collection.state import CollectionState
-
-        state = CollectionState(tmp_path / "collection" / "iab-2.2")
-        state.init_category("Sedan", target=50)
-        _seed_from_labels(state, tmp_path, "iab-2.2")  # Should not raise
-        assert state.categories["Sedan"]["collected"] == 0
 
 
 class TestAuditDomains:

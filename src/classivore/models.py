@@ -43,11 +43,10 @@ class CoverageReport:
 
 @dataclass
 class IterationPlan:
-    """What the agent intends to do in one iteration."""
+    """Thin audit record of what the agent intended for one iteration."""
     iteration: int
     target_categories: list[str]
-    pages_to_collect: int
-    strategy: str
+    use_llm_queries: bool = False
 
 
 @dataclass

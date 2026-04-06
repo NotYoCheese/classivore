@@ -102,7 +102,7 @@ def run_agent(
             logger.info("agent_stopped", reason=reason)
             break
 
-        # Re-analyze coverage (except first iteration — already done)
+        # 1. What do we have?
         if i > 0:
             report = analyze_coverage(
                 categories, labels_dir, target,
@@ -114,58 +114,53 @@ def run_agent(
             logger.info("agent_stopped", reason="no gaps remaining")
             break
 
-        # Plan iteration
-        plan = _plan_iteration(report, agent_config, i)
+        # 2. How many new pages does each category need?
+        gaps = report.gaps[:MAX_CATEGORIES_PER_ITERATION]
+        category_targets = {
+            g.name: g.target_count - g.current_count for g in gaps
+        }
+        use_llm = i > 0
+
+        plan = IterationPlan(
+            iteration=i,
+            target_categories=list(category_targets.keys()),
+            use_llm_queries=use_llm,
+        )
         logger.info(
             "iteration_start",
-            target_categories=len(plan.target_categories),
-            pages_to_collect=plan.pages_to_collect,
-            strategy=plan.strategy,
+            target_categories=len(category_targets),
+            use_llm_queries=use_llm,
         )
-
         agent_state.start_iteration(plan)
 
-        # Collect
+        # 3. Collect pages for those categories
         collection_summary = _run_collection(
-            config, categories, data_dir, plan, target, verbose,
+            config, categories, data_dir, plan, category_targets, verbose,
         )
 
-        # Label
+        # 4. Label everything new
         labeling_summary = _run_labeling(
             config, categories, hierarchy, data_dir,
             poll_interval, verbose,
         )
 
-        # Evaluate
+        # 5. How did we do?
         post_report = analyze_coverage(
             categories, labels_dir, target,
             excluded_categories=excluded_cats,
             excluded_tier1=excluded_tier1,
         )
+        new_labels = max(0, post_report.total_labeled_pages - report.total_labeled_pages)
 
         result = IterationResult(
             iteration=i,
             pages_collected=collection_summary.get("total_collected", 0),
-            pages_labeled=(
-                labeling_summary.get("stage2_complete", 0)
-                - report.total_labeled_pages
-                + len(report.gaps)
-                - len(post_report.gaps)
-            ),
+            pages_labeled=new_labels,
             categories_satisfied_before=report.satisfied_categories,
             categories_satisfied_after=post_report.satisfied_categories,
             gaps_before=len(report.gaps),
             gaps_after=len(post_report.gaps),
-            collection_summary=collection_summary,
-            labeling_summary=labeling_summary,
         )
-
-        # Use a simpler labeled count: new labeled pages
-        result.pages_labeled = max(
-            0,
-            post_report.total_labeled_pages - report.total_labeled_pages,
-        )
-
         agent_state.complete_iteration(result)
 
         logger.info(
@@ -184,58 +179,24 @@ def run_agent(
     return summary
 
 
-def _plan_iteration(report, config, iteration):
-    """Decide what to collect this iteration.
 
-    Takes the worst gaps (fewest labels first), caps at MAX_CATEGORIES_PER_ITERATION,
-    and computes a per-category target proportional to each category's deficit.
-    """
-    gaps = report.gaps[:MAX_CATEGORIES_PER_ITERATION]
-
-    target_categories = [g.name for g in gaps]
-    # Total pages = sum of deficits, capped to keep iterations manageable
-    total_pages = sum(g.deficit for g in gaps)
-    total_pages = min(total_pages, MAX_CATEGORIES_PER_ITERATION * config.target_per_category)
-
-    strategy = "template" if iteration == 0 else "hybrid"
-
-    return IterationPlan(
-        iteration=iteration,
-        target_categories=target_categories,
-        pages_to_collect=total_pages,
-        strategy=strategy,
-    )
-
-
-def _run_collection(config, categories, data_dir, plan, agent_target, verbose):
+def _run_collection(config, categories, data_dir, plan, category_targets, verbose):
     """Run targeted collection for gap categories."""
     from classivore.collection import run_collection
 
-    # Create a modified config that focuses on target categories
-    # by setting excluded_categories to everything NOT in the target set
+    # Focus collection on target categories by excluding everything else
     modified_config = copy.copy(config)
-
-    # Get all leaf category display names
     all_leaf_names = {
         c["display_name"] for c in categories if c["is_leaf"]
     }
-    # Target category names (short names) → display names
-    target_set = set(plan.target_categories)
     target_display = {
         c["display_name"] for c in categories
-        if c["name"] in target_set
+        if c["name"] in category_targets
     }
-    # Exclude everything that's not targeted
     non_target = all_leaf_names - target_display
     modified_config.excluded_categories = list(
         set(config.excluded_categories) | non_target
     )
-    # Use the agent's target (e.g. 50 from --target). This must exceed
-    # the seeded label counts so collection knows there's still work to do.
-    modified_config.target_per_category = agent_target
-
-    # Use LLM queries on iteration 1+ (hybrid strategy)
-    use_llm = plan.strategy == "hybrid"
 
     try:
         summary = run_collection(
@@ -243,7 +204,8 @@ def _run_collection(config, categories, data_dir, plan, agent_target, verbose):
             categories=categories,
             data_dir=str(data_dir),
             resume=True,
-            use_llm_queries=use_llm,
+            use_llm_queries=plan.use_llm_queries,
+            category_targets=category_targets,
             verbose=verbose,
         )
         return summary

@@ -10,7 +10,6 @@ import structlog
 
 from classivore.agent.runner import (
     MAX_CATEGORIES_PER_ITERATION,
-    _plan_iteration,
     _print_coverage_report,
     run_agent,
 )
@@ -75,67 +74,6 @@ def _write_labels(data_dir, slug, entries):
         for entry in entries:
             f.write(json.dumps(entry) + "\n")
 
-
-class TestPlanIteration:
-    """Test iteration planning logic."""
-
-    def test_prioritizes_worst_gaps(self):
-        gaps = [
-            CategoryGap("Empty", 0, 10, 10, "Tier1"),
-            CategoryGap("Low", 2, 10, 8, "Tier1"),
-            CategoryGap("Medium", 5, 10, 5, "Tier1"),
-        ]
-        report = CoverageReport(
-            total_categories=3, covered_categories=2,
-            satisfied_categories=0, total_labeled_pages=7,
-            gaps=gaps, timestamp="2026-04-03T00:00:00Z",
-        )
-        config = AgentConfig(target_per_category=10)
-
-        plan = _plan_iteration(report, config, iteration=0)
-
-        assert plan.target_categories[0] == "Empty"
-        assert len(plan.target_categories) == 3
-
-    def test_caps_categories_per_iteration(self):
-        gaps = [
-            CategoryGap(f"Cat{i}", 0, 10, 10, "Tier1")
-            for i in range(200)
-        ]
-        report = CoverageReport(
-            total_categories=200, covered_categories=0,
-            satisfied_categories=0, total_labeled_pages=0,
-            gaps=gaps, timestamp="2026-04-03T00:00:00Z",
-        )
-        config = AgentConfig(target_per_category=10)
-
-        plan = _plan_iteration(report, config, iteration=0)
-
-        assert len(plan.target_categories) == MAX_CATEGORIES_PER_ITERATION
-
-    def test_first_iteration_uses_template_strategy(self):
-        gaps = [CategoryGap("A", 0, 10, 10, "Tier1")]
-        report = CoverageReport(
-            total_categories=1, covered_categories=0,
-            satisfied_categories=0, total_labeled_pages=0,
-            gaps=gaps, timestamp="2026-04-03T00:00:00Z",
-        )
-        config = AgentConfig(target_per_category=10)
-
-        plan = _plan_iteration(report, config, iteration=0)
-        assert plan.strategy == "template"
-
-    def test_subsequent_iterations_use_hybrid_strategy(self):
-        gaps = [CategoryGap("A", 0, 10, 10, "Tier1")]
-        report = CoverageReport(
-            total_categories=1, covered_categories=0,
-            satisfied_categories=0, total_labeled_pages=0,
-            gaps=gaps, timestamp="2026-04-03T00:00:00Z",
-        )
-        config = AgentConfig(target_per_category=10)
-
-        plan = _plan_iteration(report, config, iteration=1)
-        assert plan.strategy == "hybrid"
 
 
 class TestRunAgentDryRun:
