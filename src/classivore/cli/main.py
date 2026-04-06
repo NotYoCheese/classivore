@@ -114,6 +114,12 @@ def _register_train(subparsers):
     p = subparsers.add_parser("train", help="Train classification model")
     _add_common_args(p)
     p.add_argument("--model-base", default=None, help="Override base model")
+    p.add_argument("--epochs", type=int, default=None, help="Override number of epochs")
+    p.add_argument("--batch-size", type=int, default=None, help="Override batch size")
+    p.add_argument("--device", default=None, help="Force device (cuda, mps, cpu)")
+    p.add_argument("--output-dir", default=None, help="Override output directory")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Show data stats and config without training")
     p.set_defaults(func=_cmd_train)
 
 
@@ -396,7 +402,41 @@ def _cmd_label(args):
 
 
 def _cmd_train(args):
-    print(f"TODO: train model for {args.taxonomy}")
+    from classivore.config.settings import get_data_dir, load_taxonomy_config
+    from classivore.training.trainer import train_model
+
+    config = load_taxonomy_config(args.taxonomy)
+    data_dir = get_data_dir(args.data_dir)
+
+    # Apply overrides
+    if args.model_base:
+        config.model_base = args.model_base
+
+    # Load enriched taxonomy
+    enriched_path = config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+
+    result = train_model(
+        config=config,
+        data_dir=data_dir,
+        output_dir=args.output_dir,
+        device=args.device,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        dry_run=args.dry_run,
+    )
+
+    if not args.dry_run:
+        print(f"\nTraining complete:")
+        print(f"  Model saved to: {result['model_path']}")
+        print(f"  Training time:  {result['training_time']}s")
+        metrics = result.get("metrics", {})
+        if "eval_f1_micro" in metrics:
+            print(f"  Val F1 micro:   {metrics['eval_f1_micro']:.4f}")
+            print(f"  Val F1 macro:   {metrics['eval_f1_macro']:.4f}")
 
 
 def _cmd_classify(args):
