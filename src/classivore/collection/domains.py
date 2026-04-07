@@ -7,8 +7,9 @@ that persists across runs.
 """
 
 import json
-import tempfile
 from pathlib import Path
+
+from classivore.persistence import atomic_json_save
 
 MIN_ATTEMPTS_FOR_BLOCK = 5
 MIN_SUCCESS_RATE = 0.20
@@ -32,18 +33,10 @@ class DomainTracker:
 
     def save(self):
         """Save scores and blocklist atomically."""
-        self._atomic_write(self.scores_file, self.scores)
-        self._atomic_write(self.blocklist_file, sorted(self.blocklist))
-
-    def _atomic_write(self, path, data):
-        fd, tmp_path = tempfile.mkstemp(dir=self.state_dir, suffix=".tmp")
-        try:
-            with open(fd, "w") as f:
-                json.dump(data, f, indent=2)
-            Path(tmp_path).replace(path)
-        except BaseException:
-            Path(tmp_path).unlink(missing_ok=True)
-            raise
+        atomic_json_save(self.scores, self.scores_file, directory=self.state_dir)
+        atomic_json_save(
+            sorted(self.blocklist), self.blocklist_file, directory=self.state_dir,
+        )
 
     def record_result(self, domain, success):
         """Record a scrape attempt result for a domain."""

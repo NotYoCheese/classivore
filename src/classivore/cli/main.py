@@ -48,6 +48,10 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    # Configure logging before dispatching to command handler
+    from classivore.logging_config import configure_logging
+    configure_logging(verbose=getattr(args, "verbose", False))
+
     args.func(args)
 
 
@@ -79,7 +83,6 @@ def _register_enrich(subparsers):
 def _register_collect(subparsers):
     p = subparsers.add_parser("collect", help="Collect training data")
     _add_common_args(p)
-    p.add_argument("--pages", type=int, default=None, help="Total pages to collect (distributed across categories)")
     p.add_argument("--resume", action="store_true", default=True, help="Resume from existing state (default)")
     p.add_argument("--no-resume", action="store_true", help="Start fresh, ignoring existing state")
     p.add_argument("--queries-only", action="store_true", help="Generate queries without fetching content")
@@ -111,6 +114,12 @@ def _register_train(subparsers):
     p = subparsers.add_parser("train", help="Train classification model")
     _add_common_args(p)
     p.add_argument("--model-base", default=None, help="Override base model")
+    p.add_argument("--epochs", type=int, default=None, help="Override number of epochs")
+    p.add_argument("--batch-size", type=int, default=None, help="Override batch size")
+    p.add_argument("--device", default=None, help="Force device (cuda, mps, cpu)")
+    p.add_argument("--output-dir", default=None, help="Override output directory")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Show data stats and config without training")
     p.set_defaults(func=_cmd_train)
 
 
@@ -127,8 +136,16 @@ def _register_classify(subparsers):
 def _register_agent(subparsers):
     p = subparsers.add_parser("agent", help="Run data expansion agent")
     _add_common_args(p)
-    p.add_argument("--max-iterations", type=int, default=10)
-    p.add_argument("--dry-run", action="store_true", help="Simulate without API calls")
+    p.add_argument("--max-iterations", type=int, default=10,
+                   help="Maximum collect/label cycles (default: 10)")
+    p.add_argument("--target", type=int, default=None,
+                   help="Target labeled pages per category (default: from config)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Show coverage analysis without collecting or labeling")
+    p.add_argument("--poll-interval", type=int, default=30,
+                   help="Batch poll interval in seconds")
+    p.add_argument("--status", action="store_true",
+                   help="Show agent run history and current coverage")
     p.set_defaults(func=_cmd_agent)
 
 
@@ -258,9 +275,16 @@ def _cmd_collect(args):
         collection_dir = Path(data_dir) / "collection" / config.slug
         shared_dir = Path(data_dir) / "collection"
         corpus_file = Path(data_dir) / "corpus" / "pages.json"
+        labels_dir = Path(data_dir) / "labels" / config.slug
         state = CollectionState(collection_dir)
         domains = DomainTracker(shared_dir)
-        print(format_status_dashboard(state, domains, corpus_file=corpus_file, taxonomy_slug=config.slug))
+        print(format_status_dashboard(
+            state, domains,
+            corpus_file=corpus_file,
+            taxonomy_slug=config.slug,
+            labels_dir=labels_dir,
+            target_per_category=config.target_per_category,
+        ))
         return
 
     # Load enriched taxonomy if available
@@ -280,7 +304,6 @@ def _cmd_collect(args):
         config=config,
         categories=categories,
         data_dir=data_dir,
-        pages=args.pages,
         resume=resume,
         queries_only=args.queries_only,
         verbose=args.verbose,
@@ -303,15 +326,19 @@ def _cmd_validate(args):
         taxonomy_categories = None
         try:
             config = load_taxonomy_config(args.taxonomy)
-            taxonomy_file = config.taxonomy_file
+            enriched_path = config.enriched_file or (
+                config.taxonomy_file.parent / "taxonomy_enriched.csv"
+            )
+            taxonomy_file = enriched_path if enriched_path.exists() else config.taxonomy_file
             if taxonomy_file.exists():
                 import csv
                 with open(taxonomy_file) as f:
                     reader = csv.DictReader(f)
+                    # Include all categories (leaf and non-leaf) since
+                    # labeling can assign non-leaf categories
                     taxonomy_categories = [
                         row[config.name_column]
                         for row in reader
-                        if row.get("is_leaf", "true").lower() == "true"
                     ]
         except Exception:
             pass  # taxonomy loading is optional for validation
@@ -375,7 +402,41 @@ def _cmd_label(args):
 
 
 def _cmd_train(args):
-    print(f"TODO: train model for {args.taxonomy}")
+    from classivore.config.settings import get_data_dir, load_taxonomy_config
+    from classivore.training.trainer import train_model
+
+    config = load_taxonomy_config(args.taxonomy)
+    data_dir = get_data_dir(args.data_dir)
+
+    # Apply overrides
+    if args.model_base:
+        config.model_base = args.model_base
+
+    # Load enriched taxonomy
+    enriched_path = config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+
+    result = train_model(
+        config=config,
+        data_dir=data_dir,
+        output_dir=args.output_dir,
+        device=args.device,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        dry_run=args.dry_run,
+    )
+
+    if not args.dry_run:
+        print(f"\nTraining complete:")
+        print(f"  Model saved to: {result['model_path']}")
+        print(f"  Training time:  {result['training_time']}s")
+        metrics = result.get("metrics", {})
+        if "eval_f1_micro" in metrics:
+            print(f"  Val F1 micro:   {metrics['eval_f1_micro']:.4f}")
+            print(f"  Val F1 macro:   {metrics['eval_f1_macro']:.4f}")
 
 
 def _cmd_classify(args):
@@ -383,7 +444,81 @@ def _cmd_classify(args):
 
 
 def _cmd_agent(args):
-    print(f"TODO: run agent for {args.taxonomy} (max {args.max_iterations} iterations)")
+    from classivore.agent.coverage import analyze_coverage
+    from classivore.agent.runner import run_agent
+    from classivore.agent.state import AgentState
+    from classivore.config.settings import get_data_dir, load_taxonomy_config
+    from classivore.taxonomy.loader import build_hierarchy, load_taxonomy
+
+    config = load_taxonomy_config(args.taxonomy)
+    data_dir = get_data_dir(args.data_dir)
+
+    if args.status:
+        from pathlib import Path
+        agent_dir = Path(data_dir) / "agent" / config.slug
+        labels_dir = Path(data_dir) / "labels" / config.slug
+        agent_state = AgentState(agent_dir)
+        summary = agent_state.summary()
+
+        print(f"Agent Status: {config.name}")
+        print("=" * 50)
+        print(f"  Iterations completed: {summary['iterations_completed']}")
+        print(f"  Total collected:      {summary['total_pages_collected']}")
+        print(f"  Total labeled:        {summary['total_pages_labeled']}")
+        if summary['started_at']:
+            print(f"  Started:              {summary['started_at']}")
+        if summary['last_checkpoint_at']:
+            print(f"  Last update:          {summary['last_checkpoint_at']}")
+
+        # Show current coverage
+        enriched_path = config.enriched_file or (
+            config.taxonomy_file.parent / "taxonomy_enriched.csv"
+        )
+        if enriched_path.exists():
+            config.taxonomy_file = enriched_path
+        categories = load_taxonomy(config)
+        target = args.target or config.target_per_category
+
+        report = analyze_coverage(
+            categories, labels_dir, target,
+            excluded_categories=set(config.excluded_categories),
+            excluded_tier1=set(config.excluded_tier1_categories),
+        )
+        print(f"\n  Coverage: {report.satisfied_categories}/{report.total_categories} "
+              f"categories at target ({report.coverage_pct:.1f}%)")
+        print(f"  Total labeled pages:  {report.total_labeled_pages}")
+        print(f"  Categories to fill:   {len(report.gaps)}")
+        return
+
+    # Load enriched taxonomy
+    enriched_path = config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+    categories = load_taxonomy(config)
+    hierarchy = build_hierarchy(categories)
+
+    print(f"Taxonomy: {config.name} ({len(categories)} categories)")
+    print(f"Data dir: {data_dir}")
+
+    summary = run_agent(
+        config=config,
+        categories=categories,
+        hierarchy=hierarchy,
+        data_dir=data_dir,
+        max_iterations=args.max_iterations,
+        target_per_category=args.target,
+        dry_run=args.dry_run,
+        poll_interval=args.poll_interval,
+        verbose=args.verbose,
+    )
+
+    if not args.dry_run:
+        print(f"\nAgent complete:")
+        print(f"  Iterations: {summary.get('iterations_completed', 0)}")
+        print(f"  Collected:  {summary.get('total_pages_collected', 0)} pages")
+        print(f"  Labeled:    {summary.get('total_pages_labeled', 0)} pages")
 
 
 def _cmd_serve(args):

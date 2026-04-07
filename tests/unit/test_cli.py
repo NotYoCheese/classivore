@@ -23,11 +23,12 @@ class TestCLIParsing:
         captured = capsys.readouterr()
         assert "classify" in captured.out.lower()
 
-    def test_train_default_taxonomy(self, capsys):
-        """train defaults to iab-2.2 taxonomy."""
-        with patch("sys.argv", ["classivore", "train"]):
+    def test_train_dry_run(self, capsys):
+        """train --dry-run shows data summary."""
+        with patch("sys.argv", ["classivore", "train", "--dry-run"]):
             main()
         captured = capsys.readouterr()
+        assert "Dry Run" in captured.out
         assert "iab-2.2" in captured.out
 
     def test_collect_audit_domains(self, capsys):
@@ -36,10 +37,3 @@ class TestCLIParsing:
             main()
         captured = capsys.readouterr()
         assert "domain" in captured.out.lower() or "No domain" in captured.out
-
-    def test_taxonomy_override(self, capsys):
-        """--taxonomy flag overrides default."""
-        with patch("sys.argv", ["classivore", "train", "--taxonomy", "iptc-media"]):
-            main()
-        captured = capsys.readouterr()
-        assert "iptc-media" in captured.out

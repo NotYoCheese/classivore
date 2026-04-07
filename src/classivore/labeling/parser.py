@@ -6,10 +6,11 @@ category name validation, and confidence/label count filtering.
 """
 
 import json
-import logging
 import re
 
-logger = logging.getLogger(__name__)
+from classivore.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _extract_text(message):
@@ -54,7 +55,7 @@ def parse_stage1_response(message):
 
         return data.get("categories", [])
     except (json.JSONDecodeError, AttributeError, TypeError) as e:
-        logger.warning("Stage 1 parse error: %s", e)
+        logger.warning("stage1_parse_error", error=str(e))
         # Attempt to salvage truncated JSON
         try:
             text = _extract_text(message)
@@ -82,7 +83,7 @@ def _salvage_truncated_categories(text):
         results.append({"name": name, "confidence": confidence})
 
     if results:
-        logger.info("Salvaged %d categories from truncated JSON", len(results))
+        logger.info("salvaged_truncated_json", category_count=len(results))
     return results
 
 
@@ -100,7 +101,7 @@ def parse_stage2_response(message, valid_names, min_confidence=0.5, max_labels=3
         text = _extract_text(message)
         data = _parse_json(text)
     except (json.JSONDecodeError, AttributeError, TypeError) as e:
-        logger.warning("Stage 2 parse error: %s", e)
+        logger.warning("stage2_parse_error", error=str(e))
         return {"reasoning": "", "categories": [], "error": str(e)}
 
     reasoning = data.get("reasoning", "")
@@ -114,7 +115,7 @@ def parse_stage2_response(message, valid_names, min_confidence=0.5, max_labels=3
 
         canonical = validate_category_name(name, valid_names)
         if canonical is None:
-            logger.info("Dropping invalid category: %s", name)
+            logger.info("dropping_invalid_category", name=name)
             continue
 
         if confidence < min_confidence:

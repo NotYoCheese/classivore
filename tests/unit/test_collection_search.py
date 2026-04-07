@@ -167,7 +167,7 @@ class TestSearchBrave:
         mock_get.return_value = resp
         with caplog.at_level(logging.WARNING):
             search_brave("test", api_key="key")
-        assert any("monthly quota low" in r.message for r in caplog.records)
+        assert any("brave_quota_low" in str(r.message) for r in caplog.records)
 
 
 # --- Serper provider ---

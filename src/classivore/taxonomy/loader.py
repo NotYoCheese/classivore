@@ -19,7 +19,7 @@ def load_taxonomy(config):
         raise FileNotFoundError(f"Taxonomy file not found: {path}")
 
     categories = []
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             categories.append({

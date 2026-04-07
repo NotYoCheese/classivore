@@ -34,3 +34,5 @@ htmlcov/
 
 # Claude Code
 .claude/
+*.log
+infra/

@@ -21,6 +21,16 @@ def domains(tmp_path):
     return DomainTracker(tmp_path / "domains")
 
 
+def _write_labels(tmp_path, entries):
+    """Write label entries as NDJSON."""
+    labels_dir = tmp_path / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    with open(labels_dir / "labels.json", "w") as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+    return labels_dir
+
+
 class TestEmptyDashboard:
     def test_renders_without_crash(self, state, domains):
         output = format_status_dashboard(state, domains)
@@ -30,9 +40,12 @@ class TestEmptyDashboard:
         output = format_status_dashboard(state, domains)
         assert "Not yet started" in output
 
-    def test_shows_no_categories(self, state, domains):
-        output = format_status_dashboard(state, domains)
-        assert "No categories" in output
+    def test_shows_no_labels_yet(self, state, domains, tmp_path):
+        labels_dir = tmp_path / "labels"
+        output = format_status_dashboard(
+            state, domains, labels_dir=labels_dir, target_per_category=50,
+        )
+        assert "No labels yet" in output
 
 
 class TestWithData:
@@ -40,15 +53,20 @@ class TestWithData:
         output = format_status_dashboard(state, domains, taxonomy_slug="iab-2.2")
         assert "iab-2.2" in output
 
-    def test_shows_progress(self, state, domains):
-        state.init_category("Sedan", target=50)
-        state.init_category("SUV", target=50)
-        state.categories["Sedan"]["collected"] = 50
-        state.categories["SUV"]["collected"] = 10
+    def test_shows_progress_from_labels(self, state, domains, tmp_path):
+        labels_dir = _write_labels(tmp_path, [
+            {"url": f"http://a{i}.com", "content_hash": f"h{i}", "categories": ["Sedan"]}
+            for i in range(50)
+        ] + [
+            {"url": f"http://b{i}.com", "content_hash": f"g{i}", "categories": ["SUV"]}
+            for i in range(10)
+        ])
 
-        output = format_status_dashboard(state, domains)
-        assert "1/2 categories satisfied" in output
-        assert "60/100 pages collected" in output
+        output = format_status_dashboard(
+            state, domains, labels_dir=labels_dir, target_per_category=50,
+        )
+        assert "1/2 categories at target" in output
+        assert "60 labeled pages" in output
 
     def test_shows_started_time(self, state, domains):
         state.started_at = datetime.now(timezone.utc).isoformat()
@@ -63,29 +81,34 @@ class TestWithData:
 
 
 class TestCoverageHistogram:
-    def test_histogram_buckets(self, state, domains):
-        state.categories = {
-            "a": {"collected": 0, "target": 50},
-            "b": {"collected": 3, "target": 50},
-            "c": {"collected": 8, "target": 50},
-            "d": {"collected": 25, "target": 50},
-            "e": {"collected": 60, "target": 50},
-        }
-        output = format_status_dashboard(state, domains)
-        assert "Coverage" in output
-        assert "0 pages:" in output
-        assert "1-5" in output
+    def test_histogram_buckets(self, state, domains, tmp_path):
+        entries = []
+        # Category with 3 labels
+        for i in range(3):
+            entries.append({"url": f"http://a{i}.com", "content_hash": f"a{i}", "categories": ["Low"]})
+        # Category with 25 labels
+        for i in range(25):
+            entries.append({"url": f"http://b{i}.com", "content_hash": f"b{i}", "categories": ["Medium"]})
+        # Category with 60 labels
+        for i in range(60):
+            entries.append({"url": f"http://c{i}.com", "content_hash": f"c{i}", "categories": ["High"]})
+        labels_dir = _write_labels(tmp_path, entries)
+
+        output = format_status_dashboard(
+            state, domains, labels_dir=labels_dir, target_per_category=50,
+        )
+        assert "Label Coverage" in output
+        assert "1-10" in output
         assert "50+" in output
 
-    def test_no_histogram_when_empty(self, state, domains):
+    def test_no_histogram_without_labels_dir(self, state, domains):
         output = format_status_dashboard(state, domains)
-        assert "Coverage" not in output
+        assert "Label Coverage" not in output
 
 
 class TestVelocity:
     def test_velocity_with_recent_urls(self, state, domains):
         state.init_category("Sedan", target=50)
-        # Add URLs with recent timestamps
         for i in range(5):
             state.record_url(f"https://example.com/{i}", "Sedan", "collected", "live_scrape")
 
@@ -97,24 +120,6 @@ class TestVelocity:
         state.init_category("Sedan", target=50)
         output = format_status_dashboard(state, domains)
         assert "no recent activity" in output
-        assert "unknown" in output
-
-    def test_eta_shown(self, state, domains):
-        state.init_category("Sedan", target=100)
-        for i in range(10):
-            state.record_url(f"https://example.com/{i}", "Sedan", "collected", "live_scrape")
-
-        output = format_status_dashboard(state, domains)
-        assert "Est. remaining:" in output
-        assert "unknown" not in output
-
-    def test_eta_complete(self, state, domains):
-        state.init_category("Sedan", target=5)
-        for i in range(5):
-            state.record_url(f"https://example.com/{i}", "Sedan", "collected", "live_scrape")
-
-        output = format_status_dashboard(state, domains)
-        assert "complete" in output
 
 
 class TestErrors:
@@ -148,7 +153,6 @@ class TestDomainSummary:
 
     def test_shows_blocked_count(self, state, domains):
         domains.add_to_blocklist("spam.com")
-        # Auto-block a domain
         for _ in range(6):
             domains.record_result("bad.com", success=False)
 

@@ -14,22 +14,27 @@ Flow:
 """
 
 import json
-import logging
 import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from classivore.collection.commoncrawl import fetch_warc_record, lookup_cdx
+from classivore.collection.commoncrawl import fetch_warc_record, lookup_cdx, probe_cdx
 from classivore.collection.domains import DomainTracker
 from classivore.collection.filters import content_hash, filter_page, is_url_blocked
-from classivore.collection.queries import generate_template_queries
+from classivore.collection.queries import (
+    build_llm_prompt,
+    generate_template_queries,
+    parse_llm_queries,
+)
 from classivore.collection.scraper import extract_text, fetch_page
 from classivore.collection.search import SearchClient
 from classivore.collection.state import CollectionState
+from classivore.logging_config import get_logger
+from classivore.persistence import append_ndjson, iter_ndjson
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CIRCUIT_BREAKER_THRESHOLD = 5
 CIRCUIT_BREAKER_PAUSE = 60
@@ -41,20 +46,24 @@ _interrupted = False
 def _sigint_handler(signum, frame):
     global _interrupted
     _interrupted = True
-    logger.warning("Interrupt received, finishing current operation and saving state...")
+    logger.warning("interrupt_received")
 
 
-def run_collection(config, categories, data_dir, pages=None, resume=True,
-                   queries_only=False, verbose=False):
+def run_collection(config, categories, data_dir, resume=True,
+                   queries_only=False, use_llm_queries=False,
+                   category_targets=None, fresh_state=False, verbose=False):
     """Run the collection pipeline.
 
     Args:
         config: TaxonomyConfig instance.
         categories: List of category dicts (from load_taxonomy).
         data_dir: Path to data directory.
-        pages: Total pages to collect (distributed across categories).
         resume: Whether to resume from existing state.
         queries_only: If True, generate and log queries without fetching.
+        use_llm_queries: If True, use LLM to generate queries when templates exhausted.
+        category_targets: Optional dict of {category_name: pages_to_collect}.
+            When provided, each category gets its own target. When None
+            (standalone mode), falls back to config.target_per_category.
         verbose: Enable verbose logging.
 
     Returns:
@@ -62,13 +71,6 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     """
     global _interrupted
     _interrupted = False
-
-    if verbose:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        )
 
     # Per-taxonomy state directory
     collection_dir = Path(data_dir) / "collection" / config.slug
@@ -78,6 +80,11 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     corpus_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize state (per-taxonomy) and domain tracker (shared)
+    # fresh_state: start with clean query/category tracking (agent mode)
+    # Domain scores persist regardless (separate file, shared across runs)
+    if fresh_state:
+        state_file = collection_dir / "state.json"
+        state_file.unlink(missing_ok=True)
     state = CollectionState(collection_dir)
     domains = DomainTracker(shared_collection_dir)
 
@@ -92,16 +99,12 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
         if c["is_leaf"] and c["display_name"] not in excluded
     ]
 
-    # Compute per-category targets
-    target = config.target_per_category
-    if pages:
-        target = max(1, pages // len(leaf_cats)) if leaf_cats else 0
-
+    # Initialize per-category targets
     for cat in leaf_cats:
-        state.init_category(cat["name"], target=target)
-
-    # Seed from existing labels if available
-    _seed_from_labels(state, data_dir, config.slug)
+        cat_target = (category_targets or {}).get(
+            cat["name"], config.target_per_category,
+        )
+        state.init_category(cat["name"], target=cat_target)
 
     # Initialize search client
     search_client = SearchClient.from_config(config)
@@ -112,21 +115,38 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     prev_handler = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, _sigint_handler)
 
+    # Build category lookup for LLM query context
+    cat_by_name = {c["name"]: c for c in categories}
+
     # Main collection loop
     collected_pages = []
     consecutive_failures = 0
+    cdx_available = None  # None = not yet checked
 
     try:
         for cat in leaf_cats:
             if _interrupted or state.is_satisfied(cat["name"]):
                 continue
 
-            # Generate template queries
+            # Probe CDX health once per category
+            if config.commoncrawl_crawl_id:
+                cdx_available = probe_cdx(config.commoncrawl_crawl_id)
+                if not cdx_available:
+                    logger.info("cdx_unavailable_skipping", category=cat["name"])
+
             tried = set(state.categories[cat["name"]]["queries_tried"])
+
+            # Tier 1: template queries (free)
             queries = generate_template_queries(cat, tried=tried)
 
+            if not queries and use_llm_queries:
+                # Tier 2: LLM-generated queries when templates exhausted
+                queries = _generate_llm_queries(
+                    cat, categories, config, tried, queries_only,
+                )
+
             if not queries:
-                logger.info("No new queries for %s", cat["name"])
+                logger.info("no_new_queries", category=cat["name"])
                 continue
 
             for query in queries:
@@ -138,7 +158,7 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
 
                 if queries_only:
                     state.record_query(cat["name"], query)
-                    logger.info("Query [%s]: %s", cat["name"], query)
+                    logger.info("query_generated", category=cat["name"], query=query)
                     continue
 
                 # Search
@@ -148,12 +168,13 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
                     # Transient failure — don't record query, increment circuit breaker
                     consecutive_failures += 1
                     state.record_search_error()
-                    logger.warning("Search failed (consecutive: %d)", consecutive_failures)
+                    logger.warning("search_failed", consecutive_failures=consecutive_failures)
 
                     if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
                         logger.warning(
-                            "Circuit breaker: %d consecutive failures, pausing %ds",
-                            consecutive_failures, CIRCUIT_BREAKER_PAUSE,
+                            "circuit_breaker_tripped",
+                            consecutive_failures=consecutive_failures,
+                            pause_seconds=CIRCUIT_BREAKER_PAUSE,
                         )
                         _save_checkpoint(state, domains, collected_pages, corpus_file)
                         collected_pages = []
@@ -191,9 +212,10 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
                     if state.get_domain_count(cat["name"], domain) >= config.max_per_domain_per_category:
                         continue
 
-                    # Retrieve content: Common Crawl first, then live scrape
+                    # Retrieve content: Common Crawl first (if available), then live scrape
                     page = _retrieve_and_filter(
                         url, cat["name"], config, state, domains, seen_hashes,
+                        use_cdx=cdx_available,
                     )
 
                     if page:
@@ -213,44 +235,92 @@ def run_collection(config, categories, data_dir, pages=None, resume=True,
     return state.summary()
 
 
-def _seed_from_labels(state, data_dir, taxonomy_slug):
-    """Seed category collected counts from existing labels.
+def _generate_llm_queries(cat, categories, config, tried, queries_only):
+    """Generate LLM queries for a category when templates are exhausted.
 
-    If labels exist for this taxonomy, count labeled pages per category
-    and update state counts (only if greater than current).
+    Uses the Anthropic API (non-batch, single call) to generate creative
+    queries informed by category context and previously tried queries.
+
+    Args:
+        cat: Category dict.
+        categories: Full list of category dicts (for sibling lookup).
+        config: TaxonomyConfig instance.
+        tried: Set of already-tried query strings.
+        queries_only: If True, skip API call and return empty.
+
+    Returns:
+        List of new query strings, or empty list on failure.
     """
-    labels_file = Path(data_dir) / "labels" / taxonomy_slug / "labels.json"
-    if not labels_file.exists():
-        return
+    if queries_only:
+        return []
+
+    # Find siblings (same parent)
+    parent_id = cat.get("parent_id", "")
+    siblings = [
+        c["name"] for c in categories
+        if c.get("parent_id") == parent_id and c["name"] != cat["name"]
+    ]
+
+    # Get domain hints for this category's tier-1
+    tier1 = cat["path"][0] if cat.get("path") else cat["name"]
+    domain_hints = config.domain_hints.get(tier1, []) if hasattr(config, "domain_hints") else []
+
+    # Compute pages still needed
+    pages_needed = None
+    if hasattr(config, "target_per_category"):
+        pages_needed = config.target_per_category
+
+    messages = build_llm_prompt(
+        cat,
+        siblings=siblings,
+        tried_queries=sorted(tried),
+        domain_hints=domain_hints or None,
+        pages_needed=pages_needed,
+    )
 
     try:
-        label_counts = {}
-        with open(labels_file) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                entry = json.loads(line)
-                for cat_name in entry.get("categories", []):
-                    label_counts[cat_name] = label_counts.get(cat_name, 0) + 1
+        from classivore.batch import get_api_client
+        client = get_api_client()
+        response = client.messages.create(
+            model=config.query_model,
+            max_tokens=300,
+            temperature=0.7,
+            system=("You generate search queries to find high-quality articles "
+                    "for a content taxonomy. Each query should find articles, "
+                    "guides, analyses, or expert content — NOT product listings, "
+                    "marketplaces, or shopping pages. Return exactly 5 queries, "
+                    "one per line, numbered 1-5. No commentary."),
+            messages=messages,
+        )
 
-        for name, count in label_counts.items():
-            cat = state.categories.get(name)
-            if cat and count > cat["collected"]:
-                cat["collected"] = count
-                logger.info("Seeded %s with %d labeled pages", name, count)
+        text = "".join(b.text for b in response.content if hasattr(b, "text"))
+        queries = parse_llm_queries(text)
+        new_queries = [q for q in queries if q not in tried]
+
+        if new_queries:
+            logger.info(
+                "llm_queries_generated",
+                category=cat["name"],
+                count=len(new_queries),
+            )
+
+        return new_queries
 
     except Exception as e:
-        logger.warning("Failed to load labels for seeding: %s", e)
+        logger.warning("llm_query_generation_failed", category=cat["name"], error=str(e))
+        return []
 
 
-def _retrieve_and_filter(url, category, config, state, domains, seen_hashes):
+
+
+def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,
+                         use_cdx=True):
     """Try to retrieve and filter a single URL. Returns page dict or None."""
     html = None
     source = "commoncrawl"
 
-    # Try Common Crawl first
-    if config.commoncrawl_crawl_id:
+    # Try Common Crawl first (if CDX is available)
+    if use_cdx and config.commoncrawl_crawl_id:
         records = lookup_cdx(url, crawl_id=config.commoncrawl_crawl_id)
         if records:
             html = fetch_warc_record(records[0])
@@ -307,26 +377,18 @@ def _load_existing_hashes(corpus_file):
         return hashes
 
     try:
-        with open(corpus_file) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    page = json.loads(line)
-                    if "content_hash" in page:
-                        hashes.add(page["content_hash"])
+        for page in iter_ndjson(corpus_file):
+            if "content_hash" in page:
+                hashes.add(page["content_hash"])
     except Exception as e:
-        logger.warning("Failed to load existing corpus: %s", e)
+        logger.warning("corpus_load_failed", error=str(e))
 
     return hashes
 
 
 def _save_checkpoint(state, domains, pages, corpus_file):
     """Save state, domain scores, and append new pages to corpus."""
-    if pages:
-        with open(corpus_file, "a") as f:
-            for page in pages:
-                f.write(json.dumps(page) + "\n")
-
+    append_ndjson(corpus_file, pages)
     state.save()
     domains.save()
 

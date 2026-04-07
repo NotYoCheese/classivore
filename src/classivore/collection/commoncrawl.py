@@ -11,18 +11,38 @@ and applies exponential backoff on rate limiting (429/503).
 
 import io
 import json
-import logging
 import time
 
 import requests
 
-logger = logging.getLogger(__name__)
+from classivore.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 CDX_BASE_URL = "https://index.commoncrawl.org"
 WARC_BASE_URL = "https://data.commoncrawl.org"
 
 BACKOFF_DELAYS = [2, 4, 8]
 REQUEST_TIMEOUT = 30
+PROBE_TIMEOUT = 5
+
+
+def probe_cdx(crawl_id):
+    """Quick health check on CDX index. Returns True if responsive.
+
+    Sends a minimal query with a short timeout. Used to skip CDX
+    for an entire category if the service is down or degraded.
+    """
+    endpoint = f"{CDX_BASE_URL}/{crawl_id}-index"
+    try:
+        resp = requests.get(
+            endpoint,
+            params={"url": "example.com", "output": "json", "limit": 1},
+            timeout=PROBE_TIMEOUT,
+        )
+        return resp.status_code == 200
+    except requests.RequestException:
+        return False
 
 
 def parse_cdx_response(text):
@@ -50,8 +70,11 @@ def parse_cdx_response(text):
         if record.get("status", "200") != "200":
             continue
 
-        record["offset"] = int(record["offset"])
-        record["length"] = int(record["length"])
+        try:
+            record["offset"] = int(record["offset"])
+            record["length"] = int(record["length"])
+        except (ValueError, KeyError):
+            continue
         records.append(record)
 
     return records
@@ -98,7 +121,7 @@ def _try_cdx_endpoint(endpoint, params):
         try:
             resp = requests.get(endpoint, params=params, timeout=REQUEST_TIMEOUT)
         except requests.RequestException as e:
-            logger.warning("CDX request failed: %s", e)
+            logger.warning("cdx_request_failed", error=str(e))
             return None
 
         if resp.status_code == 404:
@@ -106,14 +129,14 @@ def _try_cdx_endpoint(endpoint, params):
 
         if resp.status_code in (429, 503):
             if delay is not None:
-                logger.info("CDX rate limited (%d), backing off %ds", resp.status_code, delay)
+                logger.info("cdx_rate_limited", status_code=resp.status_code, backoff_seconds=delay)
                 time.sleep(delay)
                 continue
-            logger.warning("CDX rate limited after all retries")
+            logger.warning("cdx_rate_limited_exhausted")
             return None
 
         if resp.status_code != 200:
-            logger.warning("CDX unexpected status %d", resp.status_code)
+            logger.warning("cdx_unexpected_status", status_code=resp.status_code)
             return None
 
         records = parse_cdx_response(resp.text)
@@ -146,11 +169,11 @@ def fetch_warc_record(record):
             timeout=REQUEST_TIMEOUT,
         )
     except requests.RequestException as e:
-        logger.warning("WARC download failed: %s", e)
+        logger.warning("warc_download_failed", error=str(e))
         return None
 
     if resp.status_code not in (200, 206):
-        logger.warning("WARC download status %d for %s", resp.status_code, url)
+        logger.warning("warc_download_bad_status", status_code=resp.status_code, url=url)
         return None
 
     return _extract_text_from_warc(resp.content)
@@ -168,7 +191,7 @@ def _extract_text_from_warc(data):
     try:
         from warcio.archiveiterator import ArchiveIterator
     except ImportError:
-        logger.error("warcio not installed — run: uv pip install warcio")
+        logger.error("warcio_not_installed")
         return None
 
     try:
@@ -181,6 +204,6 @@ def _extract_text_from_warc(data):
                 except UnicodeDecodeError:
                     return content.decode("latin-1")
     except Exception as e:
-        logger.warning("WARC extraction failed: %s", e)
+        logger.warning("warc_extraction_failed", error=str(e))
 
     return None

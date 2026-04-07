@@ -2,14 +2,14 @@
 """Search query generation for content discovery.
 
 Generates search queries in two tiers:
-1. Template queries (free) — uses category name, description keywords, and
-   tier-1 ancestor to construct 3 diverse queries per category.
+1. Template queries (free) — uses category name, description, boundaries,
+   and tier-1 ancestor to construct diverse queries across multiple intent types.
 2. LLM queries (batch API) — when templates are exhausted, uses Haiku to
-   generate 5 creative queries per category, informed by description,
-   boundaries, siblings, and previously tried queries.
+   generate creative queries informed by category context and tried queries.
 """
 
 import re
+from datetime import datetime, timezone
 
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
@@ -22,18 +22,72 @@ STOPWORDS = {
     "very", "what", "when", "where",
 }
 
+# Template patterns organized by search intent.
+# {name} = category name, {tier1} = top-level ancestor, {year} = current year,
+# {kw} = keywords extracted from description, {bkw} = keywords from boundaries.
+QUERY_TEMPLATES = [
+    # --- Informational ---
+    '"{name}" article {tier1}',
+    "what is {name}",
+    "{name} explained",
+    "understanding {name}",
+    "{name} overview",
+    "{name} for beginners",
+    "introduction to {name}",
+    "history of {name}",
+    # --- Commercial / Comparison ---
+    "best {name} options {year}",
+    "{name} reviews {year}",
+    "{name} vs alternatives",
+    "top {name} recommendations",
+    "{name} comparison guide",
+    # --- How-to / Practical ---
+    "how to choose {name}",
+    "{name} tips and advice",
+    "{name} best practices",
+    "{name} guide {year}",
+    "getting started with {name}",
+    "{name} mistakes to avoid",
+    "{name} checklist",
+    # --- News / Trends ---
+    "{name} trends {year}",
+    "{name} news {year}",
+    "future of {name}",
+    "{name} industry report {year}",
+    "{name} statistics {year}",
+    # --- Definitional / Authoritative ---
+    "{name} definition",
+    "types of {name}",
+    "{name} categories explained",
+    # --- Long-tail / Specific ---
+    "{name} case studies",
+    "{name} examples",
+    "{name} research",
+    "{name} problems and solutions",
+    # --- Description keyword variants ---
+    "{kw} guide",
+    "{kw} analysis {year}",
+    "{kw} explained",
+    "{kw} {tier1}",
+    # --- Boundary keyword variants ---
+    "{bkw} article",
+    "{bkw} {name}",
+    # --- Tier-1 scoped (deeper categories only) ---
+    "{name} {tier1} explained",
+    "{name} in {tier1}",
+]
+
 QUERY_SYSTEM_PROMPT = """You generate search queries to find high-quality articles for a content taxonomy.
 Each query should find articles, guides, analyses, or expert content — NOT product listings, marketplaces, or shopping pages.
 Return exactly 5 queries, one per line, numbered 1-5. No commentary."""
 
 
-def _extract_keywords(description, max_words=4):
-    """Extract meaningful keywords from a description, skipping stopwords."""
-    if not description:
+def _extract_keywords(text, max_words=4):
+    """Extract meaningful keywords from text, skipping stopwords."""
+    if not text:
         return []
-    words = re.findall(r"[a-zA-Z]+", description.lower())
+    words = re.findall(r"[a-zA-Z]+", text.lower())
     keywords = [w for w in words if w not in STOPWORDS and len(w) > 2]
-    # Deduplicate while preserving order
     seen = set()
     unique = []
     for kw in keywords:
@@ -46,11 +100,12 @@ def _extract_keywords(description, max_words=4):
 def generate_template_queries(category, tried=None):
     """Generate template-based search queries for a category.
 
-    Uses category name, description keywords, and tier-1 ancestor.
+    Uses category name, description, boundaries, and tier-1 ancestor
+    to construct diverse queries across multiple intent types.
     Free — no API calls needed.
 
     Args:
-        category: Category dict with name, description, path.
+        category: Category dict with name, description, boundaries, path.
         tried: Set of previously tried query strings to exclude.
 
     Returns:
@@ -59,32 +114,62 @@ def generate_template_queries(category, tried=None):
     tried = tried or set()
     name = category["name"]
     description = category.get("description", "")
+    boundaries = category.get("boundaries", "")
     path = category.get("path", [name])
     tier1 = path[0] if path else name
+    year = str(datetime.now(timezone.utc).year)
 
-    keywords = _extract_keywords(description)
-    keyword_str = " ".join(keywords) if keywords else name.lower()
+    desc_keywords = _extract_keywords(description)
+    boundary_keywords = _extract_keywords(boundaries)
+    kw_str = " ".join(desc_keywords) if desc_keywords else name.lower()
+    bkw_str = " ".join(boundary_keywords) if boundary_keywords else ""
 
-    queries = [
-        f'"{name}" article {tier1}',
-        f"{keyword_str} guide",
-        f"{keyword_str} analysis 2026",
-    ]
+    is_deep = len(path) > 1
 
-    # Add a tier-1 scoped query if category is deeper than tier 1
-    if len(path) > 1:
-        queries.append(f"{name} {tier1} explained")
+    queries = []
+    seen = set()
 
-    return [q for q in queries if q not in tried]
+    for template in QUERY_TEMPLATES:
+        # Skip tier-1 scoped templates for root categories
+        if not is_deep and "{tier1}" in template and "{name}" in template:
+            if template in ("{name} {tier1} explained", "{name} in {tier1}"):
+                continue
+
+        # Skip boundary keyword templates if no boundary text
+        if "{bkw}" in template and not bkw_str:
+            continue
+
+        query = (
+            template
+            .replace("{name}", name)
+            .replace("{tier1}", tier1)
+            .replace("{year}", year)
+            .replace("{kw}", kw_str)
+            .replace("{bkw}", bkw_str)
+        )
+
+        # Deduplicate within this generation
+        normalized = query.strip().lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+
+        if query not in tried:
+            queries.append(query)
+
+    return queries
 
 
-def build_llm_prompt(category, siblings, tried_queries):
+def build_llm_prompt(category, siblings, tried_queries, domain_hints=None,
+                     pages_needed=None):
     """Build a prompt for LLM query generation.
 
     Args:
         category: Category dict.
         siblings: List of sibling category names.
         tried_queries: List of already-tried query strings.
+        domain_hints: Optional list of known-good domains for this category's tier-1.
+        pages_needed: Optional number of additional pages needed.
 
     Returns:
         List of message dicts for the Anthropic API.
@@ -97,6 +182,15 @@ def build_llm_prompt(category, siblings, tried_queries):
     siblings_str = ", ".join(siblings) if siblings else "None"
     tried_str = "\n".join(f"- {q}" for q in tried_queries) if tried_queries else "None yet"
 
+    domain_section = ""
+    if domain_hints:
+        domain_list = ", ".join(domain_hints)
+        domain_section = f"\nKnown good domains for this area: {domain_list}\nConsider site-scoped queries (e.g. 'topic site:domain.com') for 1-2 queries.\n"
+
+    pages_section = ""
+    if pages_needed:
+        pages_section = f"\nWe need approximately {pages_needed} more articles for this category.\n"
+
     content = f"""Generate 5 diverse search queries to find high-quality articles about this taxonomy category:
 
 Category: {name}
@@ -104,15 +198,16 @@ Full path: {path}
 Description: {description}
 Boundaries: {boundaries}
 Sibling categories (avoid overlap): {siblings_str}
-
-Previously tried queries (generate different ones):
+{domain_section}{pages_section}
+Previously tried queries (generate DIFFERENT ones — vary vocabulary, angle, and specificity):
 {tried_str}
 
 Requirements:
 - Queries should find articles, analyses, guides, and expert content
 - Avoid queries that would return product listings, shopping pages, or marketplaces
 - Make queries specific enough to match this category, not its siblings
-- Include a mix of query styles: quoted phrases, natural language, topic + format"""
+- Include a mix of query styles: quoted phrases, natural language, topic + format
+- Try angles the previous queries missed: different terminology, adjacent concepts, specific subtopics"""
 
     return [{"role": "user", "content": content}]
 

@@ -9,10 +9,11 @@ State is saved atomically via temp+rename to survive crashes.
 """
 
 import json
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+from classivore.persistence import atomic_json_save
 
 
 class CollectionState:
@@ -55,16 +56,7 @@ class CollectionState:
             "categories": self.categories,
             "urls": self.urls,
         }
-        fd, tmp_path = tempfile.mkstemp(
-            dir=self.state_dir, prefix=".state_", suffix=".tmp"
-        )
-        try:
-            with open(fd, "w") as f:
-                json.dump(data, f, indent=2)
-            Path(tmp_path).replace(self.state_file)
-        except BaseException:
-            Path(tmp_path).unlink(missing_ok=True)
-            raise
+        atomic_json_save(data, self.state_file, directory=self.state_dir)
 
     def init_category(self, name, target):
         """Initialize category tracking if not already present."""

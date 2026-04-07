@@ -10,6 +10,11 @@ import time
 import anthropic
 from dotenv import load_dotenv
 
+from classivore.errors import ConfigError
+from classivore.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def get_api_client():
     """Create an Anthropic client using API key from environment.
@@ -20,13 +25,13 @@ def get_api_client():
         anthropic.Anthropic client instance.
 
     Raises:
-        RuntimeError: If no API key is found.
+        ConfigError: If no API key is found.
     """
     load_dotenv()
 
     api_key = os.getenv("CLASSIVORE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError(
+        raise ConfigError(
             "No API key found. Set CLASSIVORE_API_KEY or ANTHROPIC_API_KEY "
             "in your environment or .env file."
         )
@@ -68,11 +73,12 @@ def poll_until_complete(client, batch_id, poll_interval=30, verbose=False):
 
         if verbose:
             counts = batch.request_counts
-            print(
-                f"  Batch {batch_id}: "
-                f"{counts.succeeded} succeeded, "
-                f"{counts.processing} processing, "
-                f"{counts.errored} errored"
+            logger.info(
+                "batch_poll",
+                batch_id=batch_id,
+                succeeded=counts.succeeded,
+                processing=counts.processing,
+                errored=counts.errored,
             )
 
         if batch.processing_status == "ended":
@@ -103,6 +109,6 @@ def iter_succeeded_results(client, batch_id):
             yield (entry.custom_id, entry.result.message)
         else:
             failed += 1
-            print(f"  Warning: {entry.custom_id} — {entry.result.type}")
+            logger.warning("batch_result_failed", custom_id=entry.custom_id, type=entry.result.type)
 
-    print(f"  Batch results: {succeeded} succeeded, {failed} failed")
+    logger.info("batch_results_complete", batch_id=batch_id, succeeded=succeeded, failed=failed)

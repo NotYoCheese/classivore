@@ -8,7 +8,6 @@ BeautifulSoup paragraph extraction when trafilatura returns nothing.
 Rate limiting is handled by the orchestrator, not here.
 """
 
-import logging
 import random
 
 import requests
@@ -16,8 +15,9 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from classivore.collection.filters import strip_cookie_banners
+from classivore.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -44,16 +44,16 @@ def fetch_page(url):
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as e:
-        logger.warning("Fetch failed for %s: %s", url, e)
+        logger.warning("fetch_failed", url=url, error=str(e))
         return None
 
     if resp.status_code != 200:
-        logger.info("Non-200 status %d for %s", resp.status_code, url)
+        logger.info("non_200_status", status_code=resp.status_code, url=url)
         return None
 
     content_type = resp.headers.get("content-type", "")
     if "html" not in content_type.lower():
-        logger.info("Non-HTML content type for %s: %s", url, content_type)
+        logger.info("non_html_content", url=url, content_type=content_type)
         return None
 
     return resp.text

@@ -3,13 +3,20 @@
 
 Formats collection state and domain tracker data into a human-readable
 status report with coverage histogram, velocity, ETA, and error breakdown.
+
+Coverage data comes from labels.json (source of truth). Operational metrics
+(velocity, errors, domains) come from CollectionState.
 """
 
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from classivore.persistence import iter_ndjson
 
-def format_status_dashboard(state, domains, corpus_file=None, taxonomy_slug=""):
+
+def format_status_dashboard(state, domains, corpus_file=None, taxonomy_slug="",
+                            labels_dir=None, target_per_category=None):
     """Format a collection status dashboard.
 
     Args:
@@ -17,6 +24,8 @@ def format_status_dashboard(state, domains, corpus_file=None, taxonomy_slug=""):
         domains: DomainTracker instance.
         corpus_file: Path to corpus pages.json (for total count).
         taxonomy_slug: Taxonomy slug for display.
+        labels_dir: Path to labels directory (for coverage from labels.json).
+        target_per_category: Target labels per category (for coverage display).
 
     Returns:
         Formatted string for terminal output.
@@ -29,11 +38,21 @@ def format_status_dashboard(state, domains, corpus_file=None, taxonomy_slug=""):
     # --- Run info ---
     _add_run_info(lines, state)
 
-    # --- Progress ---
-    _add_progress(lines, state, corpus_file)
+    # --- Coverage from labels (source of truth) ---
+    if labels_dir and target_per_category:
+        _add_label_coverage(lines, labels_dir, target_per_category)
 
-    # --- Coverage histogram ---
-    _add_coverage_histogram(lines, state)
+    # --- Corpus total ---
+    if corpus_file and Path(corpus_file).exists():
+        try:
+            total_corpus = sum(1 for line in open(corpus_file) if line.strip())
+            lines.append(f"           {total_corpus} total corpus pages (shared)")
+        except Exception:
+            pass
+
+    # --- Coverage histogram from labels ---
+    if labels_dir and target_per_category:
+        _add_label_histogram(lines, labels_dir, target_per_category)
 
     # --- Velocity ---
     _add_velocity(lines, state)
@@ -65,46 +84,69 @@ def _add_run_info(lines, state):
         lines.append(f"Last update: {state.last_checkpoint_at}")
 
 
-def _add_progress(lines, state, corpus_file):
-    summary = state.summary()
-    total_cats = summary["total_categories"]
-    satisfied = summary["satisfied_categories"]
-    collected = summary["total_collected"]
-    target = summary["total_target"]
-
-    lines.append("")
-    if total_cats > 0:
-        pct_cats = satisfied / total_cats * 100
-        lines.append(f"Progress:  {satisfied}/{total_cats} categories satisfied ({pct_cats:.1f}%)")
-    else:
-        lines.append("Progress:  No categories initialized")
-
-    if target > 0:
-        pct_pages = collected / target * 100
-        lines.append(f"           {collected}/{target} pages collected ({pct_pages:.1f}%)")
-
-    if corpus_file and Path(corpus_file).exists():
-        try:
-            total_corpus = sum(1 for line in open(corpus_file) if line.strip())
-            lines.append(f"           {total_corpus} total corpus pages (shared)")
-        except Exception:
-            pass
-
-
-def _add_coverage_histogram(lines, state):
-    histogram = state.coverage_histogram()
-    if not any(histogram.values()):
+def _add_label_coverage(lines, labels_dir, target):
+    """Show coverage from labels.json — the source of truth."""
+    labels_file = Path(labels_dir) / "labels.json"
+    if not labels_file.exists():
+        lines.append("")
+        lines.append("Progress:  No labels yet")
         return
 
+    label_counts = Counter()
+    total_pages = 0
+    for entry in iter_ndjson(labels_file):
+        total_pages += 1
+        for cat in entry.get("categories", []):
+            label_counts[cat] += 1
+
+    num_categories = len(label_counts)
+    satisfied = sum(1 for c in label_counts.values() if c >= target)
+
     lines.append("")
-    lines.append("Coverage")
+    if num_categories > 0:
+        pct = satisfied / num_categories * 100 if num_categories else 0
+        lines.append(f"Progress:  {satisfied}/{num_categories} categories at target ({pct:.1f}%)")
+    else:
+        lines.append("Progress:  No labeled categories")
+    lines.append(f"           {total_pages} labeled pages")
+
+
+def _add_label_histogram(lines, labels_dir, target):
+    """Coverage histogram from label counts."""
+    labels_file = Path(labels_dir) / "labels.json"
+    if not labels_file.exists():
+        return
+
+    label_counts = Counter()
+    for entry in iter_ndjson(labels_file):
+        for cat in entry.get("categories", []):
+            label_counts[cat] += 1
+
+    if not label_counts:
+        return
+
+    buckets = {"0": 0, "1-10": 0, "11-20": 0, "21-50": 0, "50+": 0}
+    for count in label_counts.values():
+        if count == 0:
+            buckets["0"] += 1
+        elif count <= 10:
+            buckets["1-10"] += 1
+        elif count <= 20:
+            buckets["11-20"] += 1
+        elif count <= 50:
+            buckets["21-50"] += 1
+        else:
+            buckets["50+"] += 1
+
+    lines.append("")
+    lines.append("Label Coverage")
     lines.append("-" * 60)
 
-    max_count = max(histogram.values()) if any(histogram.values()) else 1
-    for bucket, count in histogram.items():
+    max_count = max(buckets.values()) if any(buckets.values()) else 1
+    for bucket, count in buckets.items():
         bar_len = int(count / max_count * 30) if max_count > 0 else 0
         bar = "\u2588" * bar_len
-        label = f"{bucket:>5} pages:"
+        label = f"{bucket:>6} labels:"
         lines.append(f"  {label} {count:>4} categories  {bar}")
 
 
@@ -118,21 +160,8 @@ def _add_velocity(lines, state):
     if recent > 0:
         rate = recent / 10.0
         lines.append(f"  Rate: {rate:.1f} pages/min")
-
-        summary = state.summary()
-        remaining = summary["total_target"] - summary["total_collected"]
-        if remaining > 0 and rate > 0:
-            minutes_left = remaining / rate
-            if minutes_left < 60:
-                lines.append(f"  Est. remaining: ~{int(minutes_left)} minutes")
-            else:
-                hours_left = minutes_left / 60
-                lines.append(f"  Est. remaining: ~{hours_left:.0f} hours")
-        elif remaining <= 0:
-            lines.append("  Est. remaining: complete")
     else:
         lines.append("  Rate: no recent activity")
-        lines.append("  Est. remaining: unknown")
 
 
 def _add_errors(lines, state):

@@ -10,7 +10,6 @@ and batch ID tracking for resume.
 """
 
 import json
-import logging
 from pathlib import Path
 
 from classivore.batch import (
@@ -27,8 +26,10 @@ from classivore.labeling.prompts import (
     get_subtree_categories,
 )
 from classivore.labeling.state import LabelState
+from classivore.logging_config import get_logger
+from classivore.persistence import iter_ndjson, load_ndjson
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 BATCH_CHUNK_SIZE = 10000
 
@@ -50,13 +51,6 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
     Returns:
         Summary dict with labeling statistics.
     """
-    if verbose:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        )
-
     data_dir = Path(data_dir)
     labels_dir = data_dir / "labels" / config.slug
     corpus_file = data_dir / "corpus" / "pages.json"
@@ -67,8 +61,11 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
     # Load corpus pages
     pages = _load_corpus(corpus_file)
     if not pages:
-        logger.warning("No corpus pages found at %s", corpus_file)
+        logger.warning("no_corpus_pages", path=str(corpus_file))
         return label_state.summary()
+
+    # Seed state from existing labels (handles legacy imports that bypassed LabelState)
+    _seed_from_existing_labels(label_state, labels_dir)
 
     # Register all pages in state
     for page in pages:
@@ -127,10 +124,10 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
     """Run stage 1: tier-1 triage."""
     needing = state.pages_needing_stage1()
     if not needing:
-        logger.info("Stage 1: all pages already triaged")
+        logger.info("stage1_all_triaged")
         return
 
-    logger.info("Stage 1: triaging %d pages across %d tier-1 categories", len(needing), len(tier1_categories))
+    logger.info("stage1_triaging", page_count=len(needing), tier1_count=len(tier1_categories))
 
     system_prompt = build_stage1_system(tier1_categories)
     valid_tier1_names = {c["name"] for c in tier1_categories}
@@ -160,7 +157,7 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
     # Process in chunks
     for chunk_start in range(0, len(requests), BATCH_CHUNK_SIZE):
         chunk = requests[chunk_start:chunk_start + BATCH_CHUNK_SIZE]
-        logger.info("Stage 1: submitting chunk of %d requests", len(chunk))
+        logger.info("stage1_submitting_chunk", request_count=len(chunk))
 
         batch_id = submit_batch(client, chunk)
         if not batch_id:
@@ -173,28 +170,27 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
 
         # Parse and apply (save raw results inline)
         raw_path = labels_dir / f"stage1_raw_{batch_id}.jsonl"
-        raw_file = open(raw_path, "w")
-        for custom_id, message in iter_succeeded_results(client, batch_id):
-            _save_raw_line(raw_file, custom_id, message)
-            content_hash = custom_id.removeprefix("s1-")
-            tier1_cats = parse_stage1_response(message)
+        with open(raw_path, "w") as raw_file:
+            for custom_id, message in iter_succeeded_results(client, batch_id):
+                _save_raw_line(raw_file, custom_id, message)
+                content_hash = custom_id.removeprefix("s1-")
+                tier1_cats = parse_stage1_response(message)
 
-            # Validate names and filter by confidence threshold
-            filtered = []
-            for c in tier1_cats:
-                name = c.get("name", "")
-                if name not in valid_tier1_names:
-                    logger.warning("Stage 1: dropping invalid tier-1 name: %s", name)
-                    continue
-                if c.get("confidence", 0) >= config.tier1_confidence_threshold:
-                    filtered.append(c)
+                # Validate names and filter by confidence threshold
+                filtered = []
+                for c in tier1_cats:
+                    name = c.get("name", "")
+                    if name not in valid_tier1_names:
+                        logger.warning("stage1_invalid_tier1", name=name)
+                        continue
+                    if c.get("confidence", 0) >= config.tier1_confidence_threshold:
+                        filtered.append(c)
 
-            if filtered:
-                state.complete_stage1(content_hash, filtered)
-            else:
-                state.complete_stage1(content_hash, [])
+                if filtered:
+                    state.complete_stage1(content_hash, filtered)
+                else:
+                    state.complete_stage1(content_hash, [])
 
-        raw_file.close()
         state.save()
 
 
@@ -202,10 +198,10 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
     """Run stage 2: subtree classification."""
     needing = state.pages_needing_stage2()
     if not needing:
-        logger.info("Stage 2: all pages already classified")
+        logger.info("stage2_all_classified")
         return
 
-    logger.info("Stage 2: classifying %d pages", len(needing))
+    logger.info("stage2_classifying", page_count=len(needing))
 
     # Group pages by their tier-1 set for system prompt reuse
     groups = {}
@@ -255,7 +251,7 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
     # Process in chunks
     for chunk_start in range(0, len(requests), BATCH_CHUNK_SIZE):
         chunk = requests[chunk_start:chunk_start + BATCH_CHUNK_SIZE]
-        logger.info("Stage 2: submitting chunk of %d requests", len(chunk))
+        logger.info("stage2_submitting_chunk", request_count=len(chunk))
 
         batch_id = submit_batch(client, chunk)
         if not batch_id:
@@ -267,44 +263,68 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
         poll_until_complete(client, batch_id, poll_interval=poll_interval)
 
         raw_path = labels_dir / f"stage2_raw_{batch_id}.jsonl"
-        raw_file = open(raw_path, "w")
-        for custom_id, message in iter_succeeded_results(client, batch_id):
-            _save_raw_line(raw_file, custom_id, message)
-            content_hash = custom_id.removeprefix("s2-")
-            result = parse_stage2_response(
-                message, valid_names,
-                min_confidence=config.min_confidence,
-                max_labels=config.max_labels,
-            )
-
-            if "error" in result:
-                state.mark_error(content_hash, result["error"])
-            else:
-                state.complete_stage2(
-                    content_hash,
-                    result["categories"],
-                    result.get("reasoning", ""),
+        with open(raw_path, "w") as raw_file:
+            for custom_id, message in iter_succeeded_results(client, batch_id):
+                _save_raw_line(raw_file, custom_id, message)
+                content_hash = custom_id.removeprefix("s2-")
+                result = parse_stage2_response(
+                    message, valid_names,
+                    min_confidence=config.min_confidence,
+                    max_labels=config.max_labels,
                 )
 
-        raw_file.close()
+                if "error" in result:
+                    state.mark_error(content_hash, result["error"])
+                else:
+                    state.complete_stage2(
+                        content_hash,
+                        result["categories"],
+                        result.get("reasoning", ""),
+                    )
+
+        state.save()
+
+
+def _seed_from_existing_labels(state, labels_dir):
+    """Seed label state from existing labels.json.
+
+    Handles legacy imports that wrote labels directly without going
+    through LabelState. Pages already tracked in state are skipped.
+    """
+    labels_file = labels_dir / "labels.json"
+    if not labels_file.exists():
+        return
+
+    seeded = 0
+    for entry in iter_ndjson(labels_file):
+        content_hash = entry.get("content_hash", "")
+        if not content_hash:
+            continue
+        if content_hash in state.pages:
+            continue
+
+        url = entry.get("url", "")
+        categories = entry.get("categories", [])
+        labels = [{"name": c, "confidence": 1.0} for c in categories]
+
+        state.pages[content_hash] = {
+            "url": url,
+            "status": "stage2_complete",
+            "tier1_categories": None,
+            "labels": labels,
+            "reasoning": "seeded from existing labels",
+            "error": None,
+        }
+        seeded += 1
+
+    if seeded:
+        logger.info("seeded_from_existing_labels", count=seeded)
         state.save()
 
 
 def _load_corpus(corpus_file):
     """Load corpus pages from NDJSON file."""
-    pages = []
-    if not Path(corpus_file).exists():
-        return pages
-
-    with open(corpus_file) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    pages.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return pages
+    return load_ndjson(Path(corpus_file))
 
 
 def _save_raw_line(raw_file, custom_id, message):
@@ -313,7 +333,7 @@ def _save_raw_line(raw_file, custom_id, message):
         text = "".join(b.text for b in message.content if hasattr(b, "text"))
         raw_file.write(json.dumps({"custom_id": custom_id, "text": text}) + "\n")
     except Exception as e:
-        logger.warning("Failed to save raw result for %s: %s", custom_id, e)
+        logger.warning("raw_result_save_failed", custom_id=custom_id, error=str(e))
 
 
 def _write_labels(state, labels_dir):
@@ -333,4 +353,4 @@ def _write_labels(state, labels_dir):
             f.write(json.dumps(entry) + "\n")
             count += 1
 
-    logger.info("Wrote %d labeled pages to %s", count, output_path)
+    logger.info("labels_written", count=count, path=str(output_path))

@@ -12,13 +12,17 @@ Return value convention for all providers:
 """
 
 import json
-import logging
 import os
 import time
 
 import requests
+from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+from classivore.logging_config import get_logger
+
+load_dotenv()
+
+logger = get_logger(__name__)
 
 # --- Shared constants ---
 
@@ -58,7 +62,7 @@ def search_brave(query, api_key, count=10):
             )
         except TRANSIENT_EXCEPTIONS as e:
             delay = BACKOFF_DELAYS[min(attempt, len(BACKOFF_DELAYS) - 1)]
-            logger.info("Brave transient error on attempt %d, backing off %ds: %s", attempt + 1, delay, e)
+            logger.info("brave_transient_error", attempt=attempt + 1, backoff_seconds=delay, error=str(e))
             time.sleep(delay)
             continue
 
@@ -71,7 +75,7 @@ def search_brave(query, api_key, count=10):
                     delay = BACKOFF_DELAYS[attempt]
             else:
                 delay = BACKOFF_DELAYS[min(attempt, len(BACKOFF_DELAYS) - 1)]
-            logger.info("Brave 429 on attempt %d, backing off %ds", attempt + 1, delay)
+            logger.info("brave_rate_limited", attempt=attempt + 1, backoff_seconds=delay)
             time.sleep(delay)
             continue
 
@@ -79,16 +83,16 @@ def search_brave(query, api_key, count=10):
         _check_brave_quota(resp)
 
         if resp.status_code != 200:
-            logger.warning("Brave Search status %d for query: %s", resp.status_code, query)
+            logger.warning("brave_bad_status", status_code=resp.status_code, query=query)
             return []
 
         try:
             return _parse_brave_results(resp.json())
         except Exception as e:
-            logger.warning("Failed to parse Brave response: %s", e)
+            logger.warning("brave_parse_failed", error=str(e))
             return []
 
-    logger.warning("Brave Search exhausted retries for query: %s", query)
+    logger.warning("brave_retries_exhausted", query=query)
     time.sleep(BRAVE_REQUEST_INTERVAL)
     return None
 
@@ -112,7 +116,7 @@ def _check_brave_quota(resp):
             try:
                 monthly = int(parts[1])
                 if monthly < BRAVE_MONTHLY_QUOTA_WARNING:
-                    logger.warning("Brave monthly quota low: %d remaining", monthly)
+                    logger.warning("brave_quota_low", remaining=monthly)
             except ValueError:
                 pass
 
@@ -148,29 +152,29 @@ def search_serper(query, api_key, count=10):
             )
         except TRANSIENT_EXCEPTIONS as e:
             delay = BACKOFF_DELAYS[min(attempt, len(BACKOFF_DELAYS) - 1)]
-            logger.info("Serper transient error on attempt %d, backing off %ds: %s", attempt + 1, delay, e)
+            logger.info("serper_transient_error", attempt=attempt + 1, backoff_seconds=delay, error=str(e))
             time.sleep(delay)
             continue
 
         if resp.status_code == 429:
             delay = BACKOFF_DELAYS[min(attempt, len(BACKOFF_DELAYS) - 1)]
-            logger.info("Serper 429 on attempt %d, backing off %ds", attempt + 1, delay)
+            logger.info("serper_rate_limited", attempt=attempt + 1, backoff_seconds=delay)
             time.sleep(delay)
             continue
 
         time.sleep(SERPER_REQUEST_INTERVAL)
 
         if resp.status_code != 200:
-            logger.warning("Serper status %d for query: %s", resp.status_code, query)
+            logger.warning("serper_bad_status", status_code=resp.status_code, query=query)
             return []
 
         try:
             return _parse_serper_results(resp.json())
         except Exception as e:
-            logger.warning("Failed to parse Serper response: %s", e)
+            logger.warning("serper_parse_failed", error=str(e))
             return []
 
-    logger.warning("Serper exhausted retries for query: %s", query)
+    logger.warning("serper_retries_exhausted", query=query)
     time.sleep(SERPER_REQUEST_INTERVAL)
     return None
 
@@ -214,11 +218,11 @@ class SearchClient:
             name = conf["name"]
             fn = PROVIDERS.get(name)
             if not fn:
-                logger.warning("Unknown search provider: %s", name)
+                logger.warning("unknown_search_provider", provider=name)
                 continue
             api_key = os.getenv(conf.get("api_key_env", ""), "")
             if not api_key:
-                logger.info("No API key for %s (env: %s), skipping", name, conf.get("api_key_env"))
+                logger.info("no_api_key", provider=name, env_var=conf.get("api_key_env"))
                 continue
             self.providers.append({"name": name, "fn": fn, "api_key": api_key})
 
@@ -237,7 +241,7 @@ class SearchClient:
             results = provider["fn"](query, provider["api_key"], count)
 
             if results is None:
-                logger.warning("Provider %s returned None (transient failure), marking exhausted", provider["name"])
+                logger.warning("provider_exhausted", provider=provider["name"])
                 self.exhausted.add(provider["name"])
                 continue
 
