@@ -15,12 +15,20 @@ def _make_config(slug="iab-2.2"):
     config = MagicMock()
     config.slug = slug
     config.target_per_category = 2
-    config.max_queries_per_category = 6
+    config.targets_by_difficulty = {"easy": 2, "medium": 2, "hard": 2, "default": 2}
+    config.max_queries_by_difficulty = {"easy": 6, "medium": 6, "hard": 6, "default": 6}
+    config.llm_queries_from_iteration = {"easy": 3, "medium": 2, "hard": 1, "default": 2}
+    config.get_target = lambda d: 2
+    config.get_max_queries = lambda d: 6
+    config.use_llm_queries = lambda d, i: False
     config.max_per_domain_per_category = 50
     config.commoncrawl_crawl_id = None
     config.query_model = "claude-haiku-4-5-20251001"
     config.excluded_categories = []
     config.search_providers = None
+
+    from classivore.config.settings import FilterConfig
+    config.filter_config = FilterConfig()
     return config
 
 

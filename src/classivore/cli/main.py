@@ -13,6 +13,8 @@ Commands:
     train       Train classification model
     classify    Run inference on text
     agent       Run data expansion agent
+    init        Initialize a new taxonomy (validate, enrich, configure)
+    hints       Generate domain hints for tier1 categories
     publish     Publish trained model to HuggingFace Hub
     hf          HuggingFace repo management
     serve       Start local API server
@@ -41,6 +43,8 @@ def main():
     _register_train(subparsers)
     _register_classify(subparsers)
     _register_agent(subparsers)
+    _register_init(subparsers)
+    _register_hints(subparsers)
     _register_publish(subparsers)
     _register_hf(subparsers)
     _register_serve(subparsers)
@@ -153,6 +157,30 @@ def _register_agent(subparsers):
     p.set_defaults(func=_cmd_agent)
 
 
+def _register_init(subparsers):
+    p = subparsers.add_parser("init", help="Initialize a new taxonomy")
+    p.add_argument("--csv", required=True, help="Path to raw taxonomy CSV")
+    p.add_argument("--name", required=True, help="Taxonomy name (e.g. 'IAB Content Taxonomy')")
+    p.add_argument("--version", required=True, help="Version string (e.g. '2.2')")
+    p.add_argument("--slug", required=True, help="Short identifier (e.g. 'iab-2.2')")
+    p.add_argument("--taxonomies-dir", default="./taxonomies", help="Taxonomies directory")
+    p.add_argument("--id-col", default="id", help="ID column name (default: id)")
+    p.add_argument("--name-col", default="name", help="Name column name (default: name)")
+    p.add_argument("--parent-col", default="parent_id", help="Parent column name (default: parent_id)")
+    p.add_argument("--skip-enrichment", action="store_true", help="Skip batch API enrichment")
+    p.add_argument("--skip-hints", action="store_true", help="Skip domain hint generation")
+    p.add_argument("--dry-run", action="store_true", help="Validate and report only")
+    p.add_argument("--verbose", "-v", action="store_true", help="Increase output detail")
+    p.set_defaults(func=_cmd_init)
+
+
+def _register_hints(subparsers):
+    p = subparsers.add_parser("hints", help="Generate domain hints for tier1 categories")
+    _add_common_args(p)
+    p.add_argument("--dry-run", action="store_true", help="Show what would be generated")
+    p.set_defaults(func=_cmd_hints)
+
+
 def _register_publish(subparsers):
     p = subparsers.add_parser("publish", help="Publish trained model to HuggingFace Hub")
     p.add_argument("--model-path", required=True, help="Path to trained model directory")
@@ -220,8 +248,15 @@ def _cmd_enrich(args):
         config.taxonomy_file = enriched_path
     categories = load_taxonomy(config)
 
-    hierarchy = build_hierarchy(categories)
-    requests = build_batch_requests(categories, hierarchy, config)
+    # Filter out excluded tier1 categories before enrichment
+    excluded_tier1 = set(config.excluded_tier1_categories)
+    enrichable = [
+        c for c in categories
+        if not c["path"] or c["path"][0] not in excluded_tier1
+    ]
+
+    hierarchy = build_hierarchy(enrichable)
+    requests = build_batch_requests(enrichable, hierarchy, config)
 
     already_enriched = len(categories) - len(requests)
     print(f"Taxonomy: {config.name} ({len(categories)} categories)")
@@ -546,6 +581,236 @@ def _cmd_agent(args):
         print(f"  Iterations: {summary.get('iterations_completed', 0)}")
         print(f"  Collected:  {summary.get('total_pages_collected', 0)} pages")
         print(f"  Labeled:    {summary.get('total_pages_labeled', 0)} pages")
+
+
+def _cmd_init(args):
+    import shutil
+    from pathlib import Path
+
+    import yaml
+
+    from classivore.taxonomy.onboarding import (
+        generate_default_config,
+        print_onboarding_report,
+        validate_csv,
+        write_config,
+    )
+
+    csv_path = Path(args.csv)
+    taxonomies_dir = Path(args.taxonomies_dir)
+    slug = args.slug
+
+    # 1. Validate CSV
+    print(f"Validating {csv_path}...")
+    stats = validate_csv(csv_path, args.id_col, args.name_col, args.parent_col)
+
+    if stats.get("errors"):
+        print(f"\nValidation errors:")
+        for err in stats["errors"]:
+            print(f"  - {err}")
+        sys.exit(1)
+
+    if stats.get("warnings"):
+        print(f"\nWarnings:")
+        for warn in stats["warnings"]:
+            print(f"  - {warn}")
+
+    print(f"\nValidation passed:")
+    print(f"  Categories: {stats['total']}")
+    print(f"  Leaves: {stats['leaves']}")
+    print(f"  Max depth: {stats['max_depth']}")
+    print(f"  Tier1 categories: {len(stats['tier1_names'])}")
+
+    if args.dry_run:
+        print(f"\nDry run — no files written.")
+        return
+
+    # 2. Create taxonomy directory
+    tax_dir = taxonomies_dir / slug
+    tax_dir.mkdir(parents=True, exist_ok=True)
+
+    # 3. Copy CSV
+    dest_csv = tax_dir / "taxonomy.csv"
+    shutil.copy2(csv_path, dest_csv)
+    print(f"\nCopied taxonomy CSV to {dest_csv}")
+
+    # 4. Generate and write config
+    config_dict = generate_default_config(
+        slug=slug, name=args.name, version=args.version,
+        taxonomy_file="taxonomy.csv",
+        id_col=args.id_col, name_col=args.name_col, parent_col=args.parent_col,
+    )
+    config_path = tax_dir / "config.yaml"
+    write_config(config_dict, config_path)
+    print(f"Generated config at {config_path}")
+
+    # 5. Enrichment (unless skipped)
+    if not args.skip_enrichment:
+        print(f"\nRunning enrichment...")
+        from classivore.batch import (
+            get_api_client,
+            iter_succeeded_results,
+            poll_until_complete,
+            submit_batch,
+        )
+        from classivore.config.settings import TaxonomyConfig
+        from classivore.taxonomy.enricher import (
+            apply_results,
+            build_batch_requests,
+            parse_enrichment,
+        )
+        from classivore.taxonomy.loader import (
+            build_hierarchy,
+            load_taxonomy,
+            save_enriched_taxonomy,
+        )
+
+        config = TaxonomyConfig(config_path)
+        categories = load_taxonomy(config)
+        hierarchy = build_hierarchy(categories)
+        requests = build_batch_requests(categories, hierarchy, config)
+
+        if requests:
+            print(f"  Submitting {len(requests)} enrichment requests...")
+            client = get_api_client()
+            batch_id = submit_batch(client, requests)
+            print(f"  Batch ID: {batch_id}")
+            print(f"  Polling...")
+            poll_until_complete(client, batch_id, poll_interval=30,
+                                verbose=getattr(args, "verbose", False))
+
+            results = {}
+            for custom_id, message in iter_succeeded_results(client, batch_id):
+                cat_id = custom_id.removeprefix("cat-")
+                results[cat_id] = parse_enrichment(message)
+
+            apply_results(categories, results)
+            enriched_path = tax_dir / "taxonomy_enriched.csv"
+            save_enriched_taxonomy(categories, enriched_path)
+            print(f"  Enriched {len(results)} categories → {enriched_path}")
+        else:
+            print("  All categories already enriched.")
+    else:
+        print("\nSkipping enrichment (--skip-enrichment)")
+
+    # 6. Domain hints (unless skipped)
+    if not args.skip_hints:
+        print(f"\nGenerating domain hints...")
+        from classivore.config.settings import TaxonomyConfig
+        from classivore.taxonomy.enricher import generate_domain_hints
+        from classivore.taxonomy.loader import load_taxonomy
+
+        config = TaxonomyConfig(config_path)
+        enriched_path = tax_dir / "taxonomy_enriched.csv"
+        if enriched_path.exists():
+            config.taxonomy_file = enriched_path
+        categories = load_taxonomy(config)
+
+        excluded_tier1 = set(config.excluded_tier1_categories)
+        tier1_names = sorted({
+            c["path"][0] for c in categories if c.get("path")
+        } - excluded_tier1)
+
+        new_hints = generate_domain_hints(tier1_names, config)
+
+        # Merge into config.yaml
+        with open(config_path) as f:
+            raw = yaml.safe_load(f)
+        raw["domain_hints"] = {k: v for k, v in new_hints.items() if v}
+        with open(config_path, "w") as f:
+            yaml.dump(raw, f, allow_unicode=True, default_flow_style=False,
+                      sort_keys=False)
+
+        total_domains = sum(len(v) for v in new_hints.values())
+        print(f"  Generated hints for {len(new_hints)} tier1 categories ({total_domains} domains)")
+    else:
+        print("\nSkipping domain hints (--skip-hints)")
+
+    # 7. Onboarding report
+    from classivore.config.settings import TaxonomyConfig
+    from classivore.taxonomy.loader import load_taxonomy
+
+    config = TaxonomyConfig(config_path)
+    enriched_path = tax_dir / "taxonomy_enriched.csv"
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+    categories = load_taxonomy(config)
+    print_onboarding_report(categories, tax_dir)
+
+    # 8. Next steps
+    print(f"  Next steps:")
+    print(f"    1. Review {config_path}")
+    print(f"       - Adjust targets_by_difficulty if needed")
+    print(f"       - Add to excluded_categories any categories flagged above")
+    print(f"       - Add to excluded_tier1_categories any metadata tier1s")
+    print(f"    2. Run: classivore collect --taxonomy {slug}")
+    print(f"    3. Run: classivore label --taxonomy {slug}")
+    print()
+
+
+def _cmd_hints(args):
+    import yaml
+
+    from classivore.config.settings import load_taxonomy_config
+    from classivore.taxonomy.enricher import generate_domain_hints
+    from classivore.taxonomy.loader import load_taxonomy
+
+    config = load_taxonomy_config(args.taxonomy)
+
+    # Load enriched taxonomy if available
+    enriched_path = config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+    categories = load_taxonomy(config)
+
+    # Get unique tier1 names, excluding metadata categories
+    excluded_tier1 = set(config.excluded_tier1_categories)
+    tier1_names = sorted({
+        c["path"][0] for c in categories if c.get("path")
+    } - excluded_tier1)
+
+    # Find which tier1s are missing hints
+    existing = config.domain_hints
+    missing = [name for name in tier1_names if name not in existing]
+
+    print(f"Taxonomy: {config.name}")
+    print(f"  Tier1 categories: {len(tier1_names)}")
+    print(f"  Already have hints: {len(tier1_names) - len(missing)}")
+    print(f"  Need hints: {len(missing)}")
+
+    if not missing:
+        print("\nAll tier1 categories already have domain hints.")
+        return
+
+    if args.dry_run:
+        print("\nDry run — would generate hints for:")
+        for name in missing:
+            print(f"  {name}")
+        return
+
+    # Generate hints
+    new_hints = generate_domain_hints(missing, config)
+
+    # Merge into existing config
+    merged_hints = dict(existing)
+    total_domains = 0
+    for name, domains in new_hints.items():
+        if domains:
+            merged_hints[name] = domains
+            total_domains += len(domains)
+
+    # Write updated config.yaml preserving all other fields
+    with open(config.config_path) as f:
+        raw = yaml.safe_load(f)
+    raw["domain_hints"] = merged_hints
+    with open(config.config_path, "w") as f:
+        yaml.dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    print(f"\nGenerated hints for {len(new_hints)} tier1 categories")
+    print(f"  Total domains added: {total_domains}")
+    print(f"  Config updated: {config.config_path}")
 
 
 def _cmd_publish(args):
