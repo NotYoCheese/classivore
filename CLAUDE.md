@@ -21,6 +21,7 @@ Read the relevant file before modifying that subsystem:
 - [Validation](docs/claude/validation.md) — data quality checks via label-lens
 - [Inference](docs/claude/inference.md) — classifier loading, prediction, batch
 - [Agent](docs/claude/agent.md) — data expansion agent, LangGraph workflow
+- [Publishing](docs/claude/publishing.md) — HuggingFace model publishing, artifact contract
 - [CLI](docs/claude/cli.md) — command structure, argument patterns
 
 ## Rules

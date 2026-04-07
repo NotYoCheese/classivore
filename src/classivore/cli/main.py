@@ -13,6 +13,8 @@ Commands:
     train       Train classification model
     classify    Run inference on text
     agent       Run data expansion agent
+    publish     Publish trained model to HuggingFace Hub
+    hf          HuggingFace repo management
     serve       Start local API server
     taxonomy    Show taxonomy info and stats
 """
@@ -39,6 +41,8 @@ def main():
     _register_train(subparsers)
     _register_classify(subparsers)
     _register_agent(subparsers)
+    _register_publish(subparsers)
+    _register_hf(subparsers)
     _register_serve(subparsers)
     _register_taxonomy(subparsers)
 
@@ -147,6 +151,29 @@ def _register_agent(subparsers):
     p.add_argument("--status", action="store_true",
                    help="Show agent run history and current coverage")
     p.set_defaults(func=_cmd_agent)
+
+
+def _register_publish(subparsers):
+    p = subparsers.add_parser("publish", help="Publish trained model to HuggingFace Hub")
+    p.add_argument("--model-path", required=True, help="Path to trained model directory")
+    p.add_argument("--repo-id", required=True, help="HuggingFace repo (e.g. classivore/iab22-deberta-large)")
+    p.add_argument("--version", required=True, help="Semver tag (e.g. v1.0.0)")
+    p.add_argument("--token", default=None, help="HuggingFace token (falls back to HUGGINGFACE_TOKEN env)")
+    p.add_argument("--dry-run", action="store_true", help="Show what would be uploaded")
+    p.add_argument("--verbose", "-v", action="store_true", help="Increase output detail")
+    p.set_defaults(func=_cmd_publish)
+
+
+def _register_hf(subparsers):
+    p = subparsers.add_parser("hf", help="HuggingFace repo management")
+    hf_sub = p.add_subparsers(dest="hf_command", help="HuggingFace subcommands")
+
+    init_p = hf_sub.add_parser("init", help="Create HuggingFace repo")
+    init_p.add_argument("--repo-id", required=True, help="HuggingFace repo ID")
+    init_p.add_argument("--token", default=None, help="HuggingFace token (falls back to HUGGINGFACE_TOKEN env)")
+    init_p.add_argument("--public", action="store_true", help="Make repo public (default: private)")
+    init_p.add_argument("--verbose", "-v", action="store_true", help="Increase output detail")
+    init_p.set_defaults(func=_cmd_hf_init)
 
 
 def _register_serve(subparsers):
@@ -519,6 +546,51 @@ def _cmd_agent(args):
         print(f"  Iterations: {summary.get('iterations_completed', 0)}")
         print(f"  Collected:  {summary.get('total_pages_collected', 0)} pages")
         print(f"  Labeled:    {summary.get('total_pages_labeled', 0)} pages")
+
+
+def _cmd_publish(args):
+    import os
+
+    from dotenv import load_dotenv
+
+    from classivore.publishing.hub import publish_model
+
+    load_dotenv()
+    token = args.token or os.environ.get("HUGGINGFACE_TOKEN")
+    if not token:
+        print("Error: No HuggingFace token. Set --token or HUGGINGFACE_TOKEN env var.")
+        sys.exit(1)
+
+    try:
+        result = publish_model(
+            model_path=args.model_path,
+            repo_id=args.repo_id,
+            version=args.version,
+            token=token,
+            dry_run=args.dry_run,
+        )
+        if result:
+            print(f"\nPublished successfully: {result}")
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+def _cmd_hf_init(args):
+    import os
+
+    from dotenv import load_dotenv
+
+    from classivore.publishing.hub import init_repo
+
+    load_dotenv()
+    token = args.token or os.environ.get("HUGGINGFACE_TOKEN")
+    if not token:
+        print("Error: No HuggingFace token. Set --token or HUGGINGFACE_TOKEN env var.")
+        sys.exit(1)
+
+    init_repo(args.repo_id, token, private=not args.public)
+    print(f"Repo ready: {args.repo_id}")
 
 
 def _cmd_serve(args):
