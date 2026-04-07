@@ -12,6 +12,15 @@ from typing import Optional
 
 import yaml
 
+from classivore.config.defaults import (
+    DEFAULT_CLASS_WEIGHT_CAP,
+    DEFAULT_ENRICHMENT_MAX_TOKENS,
+    DEFAULT_FOCAL_ALPHA,
+    DEFAULT_FOCAL_GAMMA,
+    DEFAULT_STAGE1_MAX_TOKENS,
+    DEFAULT_STAGE2_MAX_TOKENS,
+)
+
 
 class TaxonomyConfig:
     """Configuration for a specific taxonomy."""
@@ -54,14 +63,14 @@ class TaxonomyConfig:
 
         # Focal loss
         focal = self._raw.get("focal_loss", {})
-        self.focal_alpha: float = focal.get("alpha", 0.75)
-        self.focal_gamma: float = focal.get("gamma", 3.5)
-        self.class_weight_cap: float = self._raw.get("class_weight_cap", 7.0)
+        self.focal_alpha: float = focal.get("alpha", DEFAULT_FOCAL_ALPHA)
+        self.focal_gamma: float = focal.get("gamma", DEFAULT_FOCAL_GAMMA)
+        self.class_weight_cap: float = self._raw.get("class_weight_cap", DEFAULT_CLASS_WEIGHT_CAP)
 
         # Enrichment
         enrichment = self._raw.get("enrichment", {})
         self.enrichment_model: str = enrichment.get("model", "claude-haiku-4-5-20251001")
-        self.enrichment_max_tokens: int = enrichment.get("max_tokens_per_category", 150)
+        self.enrichment_max_tokens: int = enrichment.get("max_tokens_per_category", DEFAULT_ENRICHMENT_MAX_TOKENS)
 
         # Collection
         collection = self._raw.get("collection", {})
@@ -74,8 +83,8 @@ class TaxonomyConfig:
         # Labeling
         labeling = self._raw.get("labeling", {})
         self.labeling_model: str = labeling.get("model", "claude-haiku-4-5-20251001")
-        self.stage1_max_tokens: int = labeling.get("stage1_max_tokens", 150)
-        self.stage2_max_tokens: int = labeling.get("stage2_max_tokens", 500)
+        self.stage1_max_tokens: int = labeling.get("stage1_max_tokens", DEFAULT_STAGE1_MAX_TOKENS)
+        self.stage2_max_tokens: int = labeling.get("stage2_max_tokens", DEFAULT_STAGE2_MAX_TOKENS)
         self.tier1_confidence_threshold: float = labeling.get("tier1_confidence_threshold", 0.3)
         self.labeling_temperature: float = labeling.get("temperature", 0.0)
         self.text_truncation_words: int = labeling.get("text_truncation_words", 3000)

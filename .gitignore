@@ -36,3 +36,4 @@ htmlcov/
 .claude/
 *.log
 infra/
+taxonomies/

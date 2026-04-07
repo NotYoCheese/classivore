@@ -12,6 +12,8 @@ classivore label     — Label scraped data with LLM
 classivore train     — Train DeBERTa model
 classivore classify  — Run inference (text, file, or interactive)
 classivore agent     — Run data expansion agent
+classivore publish   — Publish trained model to HuggingFace Hub
+classivore hf init   — Create HuggingFace repo
 classivore serve     — Start local API server
 classivore taxonomy  — Show taxonomy info (categories, stats, coverage)
 ```

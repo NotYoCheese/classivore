@@ -45,7 +45,7 @@ class TestTaxonomyConfig:
     def test_enrichment_max_tokens_loaded(self):
         """Enrichment max tokens loads from config."""
         config = load_taxonomy_config("iab-2.2")
-        assert config.enrichment_max_tokens == 150
+        assert config.enrichment_max_tokens == 300
 
     def test_labeling_settings_loaded(self):
         """Labeling settings load from config."""
