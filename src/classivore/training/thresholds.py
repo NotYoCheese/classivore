@@ -12,12 +12,12 @@ from pathlib import Path
 import numpy as np
 from sklearn.metrics import f1_score
 
+from classivore.config.defaults import MIN_SAMPLES_FOR_OPTIMIZATION
 from classivore.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 THRESHOLD_RANGE = np.arange(0.30, 0.71, 0.05)
-MIN_SAMPLES_FOR_OPTIMIZATION = 5
 
 
 def optimize_global_threshold(probs, labels):

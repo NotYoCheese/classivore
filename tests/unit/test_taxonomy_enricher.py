@@ -87,9 +87,10 @@ class TestBuildBatchRequests:
         assert requests[0]["params"]["max_tokens"] == 150
         assert requests[0]["params"]["system"] == SYSTEM_PROMPT
 
-    def test_skips_already_enriched(self):
+    def test_skips_fully_enriched(self):
         cats = _make_categories()
         cats[0]["description"] = "Already enriched"
+        cats[0]["aliases"] = ["cars", "vehicles"]
         hierarchy = build_hierarchy(cats)
         config = _make_config()
 
@@ -98,6 +99,19 @@ class TestBuildBatchRequests:
         assert len(requests) == 2
         ids = [r["custom_id"] for r in requests]
         assert "cat-1" not in ids
+
+    def test_includes_when_description_but_no_aliases(self):
+        cats = _make_categories()
+        cats[0]["description"] = "Already enriched"
+        # No aliases — should still be included for backfill
+        hierarchy = build_hierarchy(cats)
+        config = _make_config()
+
+        requests = build_batch_requests(cats, hierarchy, config)
+
+        assert len(requests) == 3
+        ids = [r["custom_id"] for r in requests]
+        assert "cat-1" in ids
 
     def test_uses_config_model(self):
         cats = _make_categories()
@@ -111,38 +125,62 @@ class TestBuildBatchRequests:
 
 
 class TestParseEnrichment:
-    def test_json_response(self):
+    def test_json_response_full(self):
         message = MagicMock()
         block = MagicMock()
-        block.text = '{"description": "Content about vehicles.", "boundary": "Distinguished from Travel by focus on vehicles."}'
+        block.text = '{"description": "Content about vehicles.", "boundary": "Distinguished from Travel by focus on vehicles.", "aliases": ["cars", "automobiles", "motor vehicles", "autos"], "difficulty": "easy"}'
         message.content = [block]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert desc == "Content about vehicles."
         assert bounds == "Distinguished from Travel by focus on vehicles."
+        assert aliases == ["cars", "automobiles", "motor vehicles", "autos"]
+        assert difficulty == "easy"
 
     def test_json_with_code_fences(self):
         message = MagicMock()
         block = MagicMock()
-        block.text = '```json\n{"description": "About vehicles.", "boundary": "Not about travel."}\n```'
+        block.text = '```json\n{"description": "About vehicles.", "boundary": "Not about travel.", "aliases": ["cars"], "difficulty": "easy"}\n```'
         message.content = [block]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert desc == "About vehicles."
         assert bounds == "Not about travel."
+        assert aliases == ["cars"]
+        assert difficulty == "easy"
 
-    def test_json_missing_boundary(self):
+    def test_json_missing_optional_fields(self):
         message = MagicMock()
         block = MagicMock()
-        block.text = '{"description": "Content about vehicles."}'
+        block.text = '{"description": "Content about vehicles.", "boundary": "Not travel."}'
         message.content = [block]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert desc == "Content about vehicles."
-        assert bounds == ""
+        assert bounds == "Not travel."
+        assert aliases == []
+        assert difficulty == "medium"
+
+    def test_json_invalid_aliases_type(self):
+        message = MagicMock()
+        block = MagicMock()
+        block.text = '{"description": "Desc.", "boundary": "Bounds.", "aliases": "not a list"}'
+        message.content = [block]
+
+        _, _, aliases, _ = parse_enrichment(message)
+        assert aliases == []
+
+    def test_json_invalid_difficulty(self):
+        message = MagicMock()
+        block = MagicMock()
+        block.text = '{"description": "Desc.", "boundary": "Bounds.", "difficulty": "impossible"}'
+        message.content = [block]
+
+        _, _, _, difficulty = parse_enrichment(message)
+        assert difficulty == "medium"
 
     def test_fallback_two_lines(self):
         message = MagicMock()
@@ -150,10 +188,12 @@ class TestParseEnrichment:
         block.text = "Content about vehicles.\nDistinguished from Travel."
         message.content = [block]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert desc == "Content about vehicles."
         assert bounds == "Distinguished from Travel."
+        assert aliases == []
+        assert difficulty == "medium"
 
     def test_fallback_single_line(self):
         message = MagicMock()
@@ -161,10 +201,12 @@ class TestParseEnrichment:
         block.text = "Content about vehicles."
         message.content = [block]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert desc == "Content about vehicles."
         assert bounds == ""
+        assert aliases == []
+        assert difficulty == "medium"
 
     def test_empty_response(self):
         message = MagicMock()
@@ -172,10 +214,12 @@ class TestParseEnrichment:
         block.text = ""
         message.content = [block]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert desc == ""
         assert bounds == ""
+        assert aliases == []
+        assert difficulty == "medium"
 
     def test_fallback_strips_markdown_headings(self):
         message = MagicMock()
@@ -183,7 +227,7 @@ class TestParseEnrichment:
         block.text = "# Category Name\nFootage captured by cameras.\nDistinguished from Auto Shows."
         message.content = [block]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert not desc.startswith("#")
         assert desc == "Footage captured by cameras."
@@ -194,34 +238,39 @@ class TestParseEnrichment:
         block1 = MagicMock()
         block1.text = '{"description": "Part one."'
         block2 = MagicMock()
-        block2.text = ', "boundary": "Part two."}'
+        block2.text = ', "boundary": "Part two.", "aliases": ["a"], "difficulty": "hard"}'
         message.content = [block1, block2]
 
-        desc, bounds = parse_enrichment(message)
+        desc, bounds, aliases, difficulty = parse_enrichment(message)
 
         assert desc == "Part one."
         assert bounds == "Part two."
+        assert aliases == ["a"]
+        assert difficulty == "hard"
 
 
 class TestApplyResults:
     def test_applies_to_matching_categories(self):
         cats = _make_categories()
         results = {
-            "1": ("About vehicles.", "Not about travel."),
-            "2": ("Four-door cars.", "Distinguished from SUV by enclosed trunk."),
+            "1": ("About vehicles.", "Not about travel.", ["cars", "autos"], "easy"),
+            "2": ("Four-door cars.", "Distinguished from SUV.", ["sedan", "saloon"], "medium"),
         }
 
         apply_results(cats, results)
 
         assert cats[0]["description"] == "About vehicles."
         assert cats[0]["boundaries"] == "Not about travel."
+        assert cats[0]["aliases"] == ["cars", "autos"]
+        assert cats[0]["difficulty"] == "easy"
         assert cats[1]["description"] == "Four-door cars."
+        assert cats[1]["aliases"] == ["sedan", "saloon"]
         assert cats[2]["description"] == ""  # Not in results
 
     def test_preserves_existing_when_not_in_results(self):
         cats = _make_categories()
         cats[2]["description"] = "Existing description"
-        results = {"1": ("New desc.", "New bounds.")}
+        results = {"1": ("New desc.", "New bounds.", ["cars"], "hard")}
 
         apply_results(cats, results)
 
