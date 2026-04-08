@@ -125,10 +125,13 @@ def run_collection(config, categories, data_dir, resume=True,
     collected_pages = []
     consecutive_failures = 0
     cdx_available = None  # None = not yet checked
+    total_cats = len(leaf_cats)
+    cats_processed = 0
 
     try:
         for cat in leaf_cats:
             if _interrupted or state.is_satisfied(cat["name"]):
+                cats_processed += 1
                 continue
 
             difficulty = cat.get("difficulty", "")
@@ -158,6 +161,7 @@ def run_collection(config, categories, data_dir, resume=True,
 
             if not queries:
                 logger.info("no_new_queries", category=cat["name"])
+                cats_processed += 1
                 continue
 
             for query in queries:
@@ -237,6 +241,16 @@ def run_collection(config, categories, data_dir, resume=True,
                 # Checkpoint after each query cycle
                 _save_checkpoint(state, domains, collected_pages, corpus_file)
                 collected_pages = []
+
+            cats_processed += 1
+            summary = state.summary()
+            logger.info(
+                "progress",
+                category=cat["name"],
+                categories_done=f"{cats_processed}/{total_cats}",
+                collected=summary["total_collected"],
+                satisfied=f"{summary['satisfied_categories']}/{summary['total_categories']}",
+            )
 
     finally:
         # Always save on exit (normal, interrupt, or exception)
