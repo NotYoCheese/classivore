@@ -99,7 +99,7 @@ def _is_ecommerce_domain(url):
     return any(signal in domain for signal in ECOMMERCE_DOMAIN_SIGNALS)
 
 
-def is_url_blocked(url):
+def is_url_blocked(url, relaxations=None):
     """Check URL against two-tier blocklist and minimum path depth.
 
     Tier 1 (always block): e-commerce actions, admin, galleries, ad networks.
@@ -107,6 +107,7 @@ def is_url_blocked(url):
 
     Args:
         url: URL string to check.
+        relaxations: Optional dict with per-tier1 filter overrides.
 
     Returns:
         Rejection reason string, or None if URL is acceptable.
@@ -125,9 +126,11 @@ def is_url_blocked(url):
                 return f"url_ecommerce:{pattern.strip('/')}"
 
     # Require minimum path depth (not just homepage)
+    r = relaxations or {}
+    effective_min_path_depth = r.get("min_path_depth", MIN_PATH_DEPTH)
     try:
         path = url.split("/", 3)[-1]
-        if len(path) < MIN_PATH_DEPTH:
+        if len(path) < effective_min_path_depth:
             return "url_too_shallow"
     except (IndexError, ValueError):
         return "url_parse_error"
@@ -135,7 +138,7 @@ def is_url_blocked(url):
     return None
 
 
-def filter_page(text, url="", word_count=None):
+def filter_page(text, url="", word_count=None, relaxations=None):
     """Apply all content filters to extracted text.
 
     Filters applied in order (cheapest first):
@@ -149,12 +152,18 @@ def filter_page(text, url="", word_count=None):
         text: Extracted page text.
         url: Page URL (for logging, not filtered here — use is_url_blocked).
         word_count: Pre-computed word count, or None to compute.
+        relaxations: Optional dict with per-tier1 filter overrides.
 
     Returns:
         Tuple of (filtered_text, rejection_reason).
         If filtered_text is not None, the page passed.
         If rejection_reason is not None, the page was rejected.
     """
+    r = relaxations or {}
+    effective_min_words = r.get("min_words", MIN_WORDS)
+    effective_min_unique = r.get("min_unique_word_ratio", MIN_UNIQUE_WORD_RATIO)
+    effective_allow_listing = r.get("allow_listing_pages", False)
+
     if not text or not text.strip():
         return (None, "empty_content")
 
@@ -162,7 +171,7 @@ def filter_page(text, url="", word_count=None):
         word_count = len(text.split())
 
     # 1. Word count bounds
-    if word_count < MIN_WORDS:
+    if word_count < effective_min_words:
         return (None, f"too_short:{word_count}")
 
     if word_count > MAX_WORDS:
@@ -177,15 +186,16 @@ def filter_page(text, url="", word_count=None):
     # 3. Unique word ratio
     words = text.lower().split()
     unique_words = len(set(words))
-    if unique_words / len(words) < MIN_UNIQUE_WORD_RATIO:
+    if unique_words / len(words) < effective_min_unique:
         return (None, f"low_unique_ratio:{unique_words}/{len(words)}")
 
     # 4. Article vs listing indicators
-    text_start = text[:500].lower()
-    has_article = any(ind in text_start for ind in ARTICLE_INDICATORS)
-    has_listing = any(ind in text_start for ind in LISTING_INDICATORS)
-    if has_listing and not has_article:
-        return (None, "listing_page")
+    if not effective_allow_listing:
+        text_start = text[:500].lower()
+        has_article = any(ind in text_start for ind in ARTICLE_INDICATORS)
+        has_listing = any(ind in text_start for ind in LISTING_INDICATORS)
+        if has_listing and not has_article:
+            return (None, "listing_page")
 
     # 5. Truncation
     if word_count > TRUNCATE_ABOVE:

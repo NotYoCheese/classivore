@@ -210,7 +210,7 @@ class TestPublishModel:
         assert result == "https://hf.co/commit/abc"
         mock_init.assert_called_once_with("org/repo", "tok", private=True)
         mock_upload.assert_called_once()
-        mock_tag.assert_called_once_with("org/repo", tag="v1.0.0", token="tok")
+        mock_tag.assert_called_once_with("org/repo", tag="v1.0.0", token="tok", repo_type="model")
 
     @patch("classivore.publishing.hub.create_tag")
     @patch("classivore.publishing.hub.upload_folder")

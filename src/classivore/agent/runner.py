@@ -120,17 +120,14 @@ def run_agent(
         category_targets = {
             g.name: g.target_count - g.current_count for g in gaps
         }
-        use_llm = i > 0
-
         plan = IterationPlan(
             iteration=i,
             target_categories=list(category_targets.keys()),
-            use_llm_queries=use_llm,
         )
         logger.info(
             "iteration_start",
             target_categories=len(category_targets),
-            use_llm_queries=use_llm,
+            agent_iteration=i,
         )
         agent_state.start_iteration(plan)
 
@@ -205,7 +202,7 @@ def _run_collection(config, categories, data_dir, plan, category_targets, verbos
             categories=categories,
             data_dir=str(data_dir),
             resume=True,
-            use_llm_queries=plan.use_llm_queries,
+            agent_iteration=plan.iteration,
             category_targets=category_targets,
             fresh_state=True,
             verbose=verbose,

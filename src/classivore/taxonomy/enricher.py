@@ -3,7 +3,10 @@
 
 import json as _json
 
+from classivore.logging_config import get_logger
 from classivore.taxonomy.loader import build_hierarchy, get_children, get_siblings
+
+logger = get_logger(__name__)
 
 SYSTEM_PROMPT = """\
 You are a taxonomy expert. For each category, produce a JSON object with exactly four keys:
@@ -142,6 +145,81 @@ def parse_enrichment(message):
         return (lines[0], "", [], "medium")
     else:
         return ("", "", [], "medium")
+
+
+HINTS_SYSTEM_PROMPT = (
+    "You are a web research expert. Return only a JSON array of "
+    "domain names, nothing else. No markdown, no commentary."
+)
+
+
+def generate_domain_hints(tier1_names, config):
+    """Generate domain hints for tier1 categories via direct API calls.
+
+    Makes one API call per tier1 category. Not batched — the list is short
+    (typically 20-30 tier1 categories) and we want results immediately.
+
+    Args:
+        tier1_names: List of tier1 category name strings.
+        config: TaxonomyConfig with enrichment_model setting.
+
+    Returns:
+        Dict mapping tier1_name → list of domain strings.
+    """
+    from classivore.batch import get_api_client
+
+    client = get_api_client()
+    results = {}
+
+    for name in tier1_names:
+        user_msg = (
+            f"List 8 authoritative websites that publish high-quality editorial "
+            f"articles, features, guides, and analysis about: {name}\n\n"
+            f"Focus on: journalism, expert editorial content, original reporting.\n"
+            f"Exclude: Wikipedia, aggregators, social media, e-commerce sites, "
+            f"streaming services, government sites.\n\n"
+            f'Return exactly a JSON array of bare domain names like:\n'
+            f'["example.com", "another.com"]'
+        )
+
+        try:
+            response = client.messages.create(
+                model=config.enrichment_model,
+                max_tokens=200,
+                system=HINTS_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            text = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
+
+            # Strip code fences if present
+            if text.startswith("```"):
+                lines = text.split("\n")
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                text = "\n".join(lines).strip()
+
+            domains = _json.loads(text)
+            if not isinstance(domains, list):
+                domains = []
+
+            # Clean: strip www. prefix, deduplicate
+            cleaned = []
+            seen = set()
+            for d in domains:
+                if not isinstance(d, str):
+                    continue
+                d = d.removeprefix("www.").strip().lower()
+                if d and d not in seen:
+                    seen.add(d)
+                    cleaned.append(d)
+
+            results[name] = cleaned
+            logger.info("hints_generated", tier1=name, count=len(cleaned))
+
+        except Exception as e:
+            logger.warning("hints_generation_failed", tier1=name, error=str(e))
+            results[name] = []
+
+    return results
 
 
 def apply_results(categories, results):

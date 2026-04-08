@@ -50,9 +50,16 @@ class TestGenerateTemplateQueries:
         queries = generate_template_queries(cat)
         assert any("distinguished" in q.lower() or "enclosed" in q.lower() for q in queries)
 
-    def test_includes_tier1_context(self):
+    def test_includes_scope_context(self):
         cat = _make_category()
         queries = generate_template_queries(cat)
+        # Depth-3: scope is immediate parent "Auto Body Styles", not tier1 "Automotive"
+        assert any("Auto Body Styles" in q for q in queries)
+
+    def test_depth2_scope_is_tier1(self):
+        cat = _make_category(name="Auto Body Styles", path=["Automotive", "Auto Body Styles"])
+        queries = generate_template_queries(cat)
+        # Depth-2: scope == tier1
         assert any("Automotive" in q for q in queries)
 
     def test_includes_current_year(self):
