@@ -600,8 +600,9 @@ def _print_classify_results(results):
     name_width = max(len(r["name"]) for r in results)
     name_width = max(name_width, 8)  # minimum "Category" header width
 
+    line = "\u2500" * (name_width + 40)
     print(f"\n  {'Category'.ljust(name_width)}  {'Confidence':>10}  Path")
-    print(f"  {'\u2500' * (name_width + 40)}")
+    print(f"  {line}")
     for r in results:
         path_str = " > ".join(r["path"]) if r.get("path") else ""
         print(f"  {r['name'].ljust(name_width)}  {r['confidence']:>10.4f}  {path_str}")
@@ -1064,7 +1065,8 @@ def _cmd_taxonomy(args):
     print(f"\nTier-1 Summary  ({len(tier1_sorted)} top-level categories)")
     header = f"  {'Tier-1 Name'.ljust(name_width)}  {'Total':>5}  {'Leaves':>6}  {'Hard':>4}  {'Excl':>4}"
     print(header)
-    print(f"  {'\u2500' * (len(header) - 2)}")
+    hline = "\u2500" * (len(header) - 2)
+    print(f"  {hline}")
     for name, data in tier1_sorted:
         print(f"  {name.ljust(name_width)}  {data['total']:>5}  {data['leaves']:>6}  {data['hard']:>4}  {data['excl']:>4}")
 
@@ -1096,8 +1098,9 @@ def _cmd_taxonomy(args):
             label = f"{g.tier1_name}: {g.name}" if g.tier1_name else g.name
             gap_labels.append((label, g))
         label_width = max(len(label) for label, _ in gap_labels)
+        gline = "\u2500" * (label_width + 25)
         print(f"  {'Category'.ljust(label_width)}  {'Labels':>6}  {'Target':>6}  {'Deficit':>7}")
-        print(f"  {'\u2500' * (label_width + 25)}")
+        print(f"  {gline}")
         for label, g in gap_labels:
             marker = " *" if g.name in excluded_names else ""
             print(f"  {label.ljust(label_width)}  {g.current_count:>6}  {g.target_count:>6}  {g.deficit:>7}{marker}")
