@@ -17,11 +17,19 @@ class TestCLIParsing:
         assert exc_info.value.code == 1
 
     def test_classify_text(self, capsys):
-        """classify --text passes text argument."""
-        with patch("sys.argv", ["classivore", "classify", "--text", "test content"]):
-            main()
+        """classify --text loads model and runs prediction."""
+        from unittest.mock import MagicMock
+        mock_cls = MagicMock()
+        mock_cls.return_value.predict.return_value = [
+            {"name": "Sedan", "id": "4", "confidence": 0.92, "path": ["Automotive", "Sedan"]},
+        ]
+        with patch.dict("sys.modules", {"classivore.inference": MagicMock(Classifier=mock_cls)}):
+            with patch("sys.argv", ["classivore", "classify", "--text", "test content",
+                                     "--model-dir", "/tmp/fake-model"]):
+                main()
         captured = capsys.readouterr()
-        assert "classify" in captured.out.lower()
+        assert "Sedan" in captured.out
+        assert "0.92" in captured.out
 
     def test_train_dry_run(self, capsys):
         """train --dry-run shows data summary."""

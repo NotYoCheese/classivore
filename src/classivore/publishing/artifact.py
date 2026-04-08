@@ -15,6 +15,7 @@ REQUIRED = {
     "label_mappings.json",
     "per_category_thresholds.json",
     "training_report.json",
+    "taxonomy_metadata.json",
 }
 
 # Files included if present — warn if missing, don't fail
