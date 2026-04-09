@@ -23,11 +23,12 @@ STOPWORDS = {
 }
 
 # Template patterns organized by search intent.
-# {name} = category name, {tier1} = top-level ancestor, {year} = current year,
-# {kw} = keywords extracted from description, {bkw} = keywords from boundaries.
+# {name} = category name, {scope} = immediate parent (or tier1 for depth ≤ 2),
+# {year} = current year, {kw} = keywords (aliases if available, else description),
+# {bkw} = keywords from boundaries.
 QUERY_TEMPLATES = [
     # --- Informational ---
-    '"{name}" article {tier1}',
+    '"{name}" article {scope}',
     "what is {name}",
     "{name} explained",
     "understanding {name}",
@@ -35,20 +36,21 @@ QUERY_TEMPLATES = [
     "{name} for beginners",
     "introduction to {name}",
     "history of {name}",
-    # --- Commercial / Comparison ---
-    "best {name} options {year}",
-    "{name} reviews {year}",
-    "{name} vs alternatives",
-    "top {name} recommendations",
-    "{name} comparison guide",
+    # --- Editorial / In-depth ---
+    '"{name}" feature article',
+    "{name} in depth {year}",
+    "{name} history and origins",
+    "{name} scene explained",
+    "{kw} journalism {year}",
+    '"{kw}" guide {year}',
+    "{kw} documentary",
+    "{name} culture and community",
+    "{scope} {name} overview",
     # --- How-to / Practical ---
-    "how to choose {name}",
     "{name} tips and advice",
     "{name} best practices",
     "{name} guide {year}",
     "getting started with {name}",
-    "{name} mistakes to avoid",
-    "{name} checklist",
     # --- News / Trends ---
     "{name} trends {year}",
     "{name} news {year}",
@@ -63,18 +65,17 @@ QUERY_TEMPLATES = [
     "{name} case studies",
     "{name} examples",
     "{name} research",
-    "{name} problems and solutions",
     # --- Description keyword variants ---
     "{kw} guide",
     "{kw} analysis {year}",
     "{kw} explained",
-    "{kw} {tier1}",
+    "{kw} {scope}",
     # --- Boundary keyword variants ---
     "{bkw} article",
     "{bkw} {name}",
-    # --- Tier-1 scoped (deeper categories only) ---
-    "{name} {tier1} explained",
-    "{name} in {tier1}",
+    # --- Scope-level context (deeper categories only) ---
+    "{name} {scope} explained",
+    "{name} in {scope}",
 ]
 
 QUERY_SYSTEM_PROMPT = """You generate search queries to find high-quality articles for a content taxonomy.
@@ -117,12 +118,19 @@ def generate_template_queries(category, tried=None):
     boundaries = category.get("boundaries", "")
     path = category.get("path", [name])
     tier1 = path[0] if path else name
+    scope = path[-2] if len(path) >= 3 else tier1
     year = str(datetime.now(timezone.utc).year)
 
-    desc_keywords = _extract_keywords(description)
-    boundary_keywords = _extract_keywords(boundaries)
-    kw_str = " ".join(desc_keywords) if desc_keywords else name.lower()
-    bkw_str = " ".join(boundary_keywords) if boundary_keywords else ""
+    aliases = category.get("aliases", [])
+    if aliases:
+        kw_str = " ".join(aliases[:3])
+        boundary_keywords = _extract_keywords(boundaries)
+        bkw_str = " ".join(boundary_keywords) if boundary_keywords else ""
+    else:
+        desc_keywords = _extract_keywords(description)
+        boundary_keywords = _extract_keywords(boundaries)
+        kw_str = " ".join(desc_keywords) if desc_keywords else name.lower()
+        bkw_str = " ".join(boundary_keywords) if boundary_keywords else ""
 
     is_deep = len(path) > 1
 
@@ -130,9 +138,9 @@ def generate_template_queries(category, tried=None):
     seen = set()
 
     for template in QUERY_TEMPLATES:
-        # Skip tier-1 scoped templates for root categories
-        if not is_deep and "{tier1}" in template and "{name}" in template:
-            if template in ("{name} {tier1} explained", "{name} in {tier1}"):
+        # Skip scope-level templates for root categories
+        if not is_deep and "{scope}" in template and "{name}" in template:
+            if template in ("{name} {scope} explained", "{name} in {scope}"):
                 continue
 
         # Skip boundary keyword templates if no boundary text
@@ -142,7 +150,7 @@ def generate_template_queries(category, tried=None):
         query = (
             template
             .replace("{name}", name)
-            .replace("{tier1}", tier1)
+            .replace("{scope}", scope)
             .replace("{year}", year)
             .replace("{kw}", kw_str)
             .replace("{bkw}", bkw_str)
@@ -161,7 +169,7 @@ def generate_template_queries(category, tried=None):
 
 
 def build_llm_prompt(category, siblings, tried_queries, domain_hints=None,
-                     pages_needed=None):
+                     pages_needed=None, aliases=None):
     """Build a prompt for LLM query generation.
 
     Args:
@@ -170,6 +178,7 @@ def build_llm_prompt(category, siblings, tried_queries, domain_hints=None,
         tried_queries: List of already-tried query strings.
         domain_hints: Optional list of known-good domains for this category's tier-1.
         pages_needed: Optional number of additional pages needed.
+        aliases: Optional list of alias strings for this category.
 
     Returns:
         List of message dicts for the Anthropic API.
@@ -191,6 +200,11 @@ def build_llm_prompt(category, siblings, tried_queries, domain_hints=None,
     if pages_needed:
         pages_section = f"\nWe need approximately {pages_needed} more articles for this category.\n"
 
+    aliases_section = ""
+    if aliases:
+        aliases_section = f"\nKnown aliases and related terms: {', '.join(aliases)}"
+        aliases_section += "\nInclude some of these terms in your queries where natural.\n"
+
     content = f"""Generate 5 diverse search queries to find high-quality articles about this taxonomy category:
 
 Category: {name}
@@ -198,7 +212,7 @@ Full path: {path}
 Description: {description}
 Boundaries: {boundaries}
 Sibling categories (avoid overlap): {siblings_str}
-{domain_section}{pages_section}
+{domain_section}{pages_section}{aliases_section}
 Previously tried queries (generate DIFFERENT ones — vary vocabulary, angle, and specificity):
 {tried_str}
 
@@ -206,6 +220,7 @@ Requirements:
 - Queries should find articles, analyses, guides, and expert content
 - Avoid queries that would return product listings, shopping pages, or marketplaces
 - Make queries specific enough to match this category, not its siblings
+- Use specific terminology and aliases provided above, not just the category name
 - Include a mix of query styles: quoted phrases, natural language, topic + format
 - Try angles the previous queries missed: different terminology, adjacent concepts, specific subtopics"""
 

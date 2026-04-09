@@ -235,6 +235,26 @@ def train_model(config, data_dir, output_dir=None, device=None,
     with open(output_dir / "label_mappings.json", "w") as f:
         json.dump(label_mappings, f, indent=2)
 
+    # Save taxonomy metadata for self-contained inference
+    cat_by_name = {c["name"]: c for c in categories}
+    taxonomy_metadata = {
+        "taxonomy_slug": config.slug,
+        "taxonomy_version": config.version,
+        "categories": {},
+    }
+    for name in data["label_names"]:
+        cat = cat_by_name.get(name)
+        if cat:
+            taxonomy_metadata["categories"][name] = {
+                "id": cat["id"],
+                "path": cat["path"],
+                "depth": cat["depth"],
+                "is_leaf": cat["is_leaf"],
+                "parent_name": cat["path"][-2] if len(cat["path"]) >= 2 else None,
+            }
+    with open(output_dir / "taxonomy_metadata.json", "w") as f:
+        json.dump(taxonomy_metadata, f, indent=2)
+
     # Save training report
     report = {
         "taxonomy": config.slug,

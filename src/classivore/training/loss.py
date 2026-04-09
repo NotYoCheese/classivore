@@ -16,6 +16,12 @@ import math
 import torch
 import torch.nn as nn
 
+from classivore.config.defaults import (
+    DEFAULT_CLASS_WEIGHT_CAP,
+    DEFAULT_FOCAL_ALPHA,
+    DEFAULT_FOCAL_GAMMA,
+)
+
 
 class WeightedFocalLoss(nn.Module):
     """Binary cross-entropy focal loss with class weights and confidence weighting.
@@ -26,7 +32,8 @@ class WeightedFocalLoss(nn.Module):
     for soft-label training.
     """
 
-    def __init__(self, alpha=0.75, gamma=3.5, class_weights=None):
+    def __init__(self, alpha=DEFAULT_FOCAL_ALPHA, gamma=DEFAULT_FOCAL_GAMMA,
+                 class_weights=None):
         """Initialize focal loss.
 
         Args:
@@ -88,7 +95,7 @@ class WeightedFocalLoss(nn.Module):
         return loss.mean()
 
 
-def compute_class_weights(label_counts, total_samples, cap=7.0):
+def compute_class_weights(label_counts, total_samples, cap=DEFAULT_CLASS_WEIGHT_CAP):
     """Compute class weights from label frequency.
 
     Formula: weight = log(total_samples / (positive_count + 1.0))

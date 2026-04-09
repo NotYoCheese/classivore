@@ -82,6 +82,10 @@ def search_brave(query, api_key, count=10):
         time.sleep(BRAVE_REQUEST_INTERVAL)
         _check_brave_quota(resp)
 
+        if resp.status_code in (401, 402, 403):
+            logger.warning("brave_quota_or_auth_failure", status_code=resp.status_code)
+            return None  # trigger fallback to next provider
+
         if resp.status_code != 200:
             logger.warning("brave_bad_status", status_code=resp.status_code, query=query)
             return []
@@ -163,6 +167,10 @@ def search_serper(query, api_key, count=10):
             continue
 
         time.sleep(SERPER_REQUEST_INTERVAL)
+
+        if resp.status_code in (401, 402, 403):
+            logger.warning("serper_quota_or_auth_failure", status_code=resp.status_code)
+            return None  # trigger fallback to next provider
 
         if resp.status_code != 200:
             logger.warning("serper_bad_status", status_code=resp.status_code, query=query)

@@ -33,6 +33,11 @@ def load_taxonomy(config):
                 "children_count": int(row.get("children_count", 0)),
                 "description": row.get("description", ""),
                 "boundaries": row.get("boundaries", ""),
+                "aliases": [
+                    a.strip() for a in row.get("aliases", "").split("|")
+                    if a.strip()
+                ] if row.get("aliases", "").strip() else [],
+                "difficulty": row.get("difficulty", "").strip() or "medium",
             })
 
     return categories
@@ -98,6 +103,7 @@ def save_enriched_taxonomy(categories, output_path):
     fieldnames = [
         "id", "parent_id", "name", "display_name", "path",
         "depth", "is_leaf", "children_count", "description", "boundaries",
+        "aliases", "difficulty",
     ]
 
     with open(output_path, "w", newline="") as f:
@@ -111,4 +117,7 @@ def save_enriched_taxonomy(categories, output_path):
             # Convert bool back to string
             if isinstance(row["is_leaf"], bool):
                 row["is_leaf"] = str(row["is_leaf"])
+            # Convert aliases list to pipe-delimited string
+            if isinstance(row.get("aliases"), list):
+                row["aliases"] = " | ".join(row["aliases"])
             writer.writerow(row)

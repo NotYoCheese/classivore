@@ -50,7 +50,7 @@ def _sigint_handler(signum, frame):
 
 
 def run_collection(config, categories, data_dir, resume=True,
-                   queries_only=False, use_llm_queries=False,
+                   queries_only=False, agent_iteration=0,
                    category_targets=None, fresh_state=False, verbose=False):
     """Run the collection pipeline.
 
@@ -60,10 +60,11 @@ def run_collection(config, categories, data_dir, resume=True,
         data_dir: Path to data directory.
         resume: Whether to resume from existing state.
         queries_only: If True, generate and log queries without fetching.
-        use_llm_queries: If True, use LLM to generate queries when templates exhausted.
+        agent_iteration: Current agent iteration (controls per-difficulty LLM
+            query eligibility via config.use_llm_queries()).
         category_targets: Optional dict of {category_name: pages_to_collect}.
             When provided, each category gets its own target. When None
-            (standalone mode), falls back to config.target_per_category.
+            (standalone mode), falls back to config.get_target(difficulty).
         verbose: Enable verbose logging.
 
     Returns:
@@ -101,8 +102,10 @@ def run_collection(config, categories, data_dir, resume=True,
 
     # Initialize per-category targets
     for cat in leaf_cats:
+        difficulty = cat.get("difficulty", "")
         cat_target = (category_targets or {}).get(
-            cat["name"], config.target_per_category,
+            cat["name"],
+            config.get_target(difficulty),
         )
         state.init_category(cat["name"], target=cat_target)
 
@@ -122,10 +125,21 @@ def run_collection(config, categories, data_dir, resume=True,
     collected_pages = []
     consecutive_failures = 0
     cdx_available = None  # None = not yet checked
+    total_cats = len(leaf_cats)
+    cats_processed = 0
 
     try:
         for cat in leaf_cats:
             if _interrupted or state.is_satisfied(cat["name"]):
+                cats_processed += 1
+                continue
+
+            difficulty = cat.get("difficulty", "")
+            max_q = config.get_max_queries(difficulty)
+
+            # Skip if query budget exhausted for this category
+            queries_tried_count = len(state.categories[cat["name"]]["queries_tried"])
+            if queries_tried_count >= max_q:
                 continue
 
             # Probe CDX health once per category
@@ -139,7 +153,7 @@ def run_collection(config, categories, data_dir, resume=True,
             # Tier 1: template queries (free)
             queries = generate_template_queries(cat, tried=tried)
 
-            if not queries and use_llm_queries:
+            if not queries and config.use_llm_queries(difficulty, agent_iteration):
                 # Tier 2: LLM-generated queries when templates exhausted
                 queries = _generate_llm_queries(
                     cat, categories, config, tried, queries_only,
@@ -147,6 +161,7 @@ def run_collection(config, categories, data_dir, resume=True,
 
             if not queries:
                 logger.info("no_new_queries", category=cat["name"])
+                cats_processed += 1
                 continue
 
             for query in queries:
@@ -198,7 +213,9 @@ def run_collection(config, categories, data_dir, resume=True,
                         continue
 
                     # URL blocklist check
-                    block_reason = is_url_blocked(url)
+                    tier1 = cat["path"][0] if cat.get("path") else ""
+                    relaxations = config.filter_config.get_relaxations(tier1)
+                    block_reason = is_url_blocked(url, relaxations=relaxations)
                     if block_reason:
                         state.record_url(url, cat["name"], "filtered", "search")
                         continue
@@ -215,7 +232,7 @@ def run_collection(config, categories, data_dir, resume=True,
                     # Retrieve content: Common Crawl first (if available), then live scrape
                     page = _retrieve_and_filter(
                         url, cat["name"], config, state, domains, seen_hashes,
-                        use_cdx=cdx_available,
+                        use_cdx=cdx_available, relaxations=relaxations,
                     )
 
                     if page:
@@ -224,6 +241,16 @@ def run_collection(config, categories, data_dir, resume=True,
                 # Checkpoint after each query cycle
                 _save_checkpoint(state, domains, collected_pages, corpus_file)
                 collected_pages = []
+
+            cats_processed += 1
+            summary = state.summary()
+            logger.info(
+                "progress",
+                category=cat["name"],
+                categories_done=f"{cats_processed}/{total_cats}",
+                collected=summary["total_collected"],
+                satisfied=f"{summary['satisfied_categories']}/{summary['total_categories']}",
+            )
 
     finally:
         # Always save on exit (normal, interrupt, or exception)
@@ -266,9 +293,8 @@ def _generate_llm_queries(cat, categories, config, tried, queries_only):
     domain_hints = config.domain_hints.get(tier1, []) if hasattr(config, "domain_hints") else []
 
     # Compute pages still needed
-    pages_needed = None
-    if hasattr(config, "target_per_category"):
-        pages_needed = config.target_per_category
+    difficulty = cat.get("difficulty", "")
+    pages_needed = config.get_target(difficulty)
 
     messages = build_llm_prompt(
         cat,
@@ -314,7 +340,7 @@ def _generate_llm_queries(cat, categories, config, tried, queries_only):
 
 
 def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,
-                         use_cdx=True):
+                         use_cdx=True, relaxations=None):
     """Try to retrieve and filter a single URL. Returns page dict or None."""
     html = None
     source = "commoncrawl"
@@ -343,7 +369,7 @@ def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,
         return None
 
     # Content filter
-    filtered_text, reason = filter_page(text)
+    filtered_text, reason = filter_page(text, relaxations=relaxations)
     if not filtered_text:
         state.record_url(url, category, "filtered", source)
         domains.record_result(urlparse(url).netloc, success=False)

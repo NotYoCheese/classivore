@@ -1,54 +1,63 @@
 # Inference Subsystem
 
-## Modules
+## Design Principle
 
-- `src/classivore/inference/classifier.py` — Load trained model, apply per-category thresholds, return predictions with confidence scores and descriptions.
+The Classifier is self-contained. Everything needed for text → structured predictions lives in the model directory. No taxonomy CSV, no config.yaml, no classivore internal imports. classivore-api does `snapshot_download(revision="v1.0.0")` and serves from that directory.
+
+## Module
+
+`src/classivore/inference/classifier.py` — standalone, depends only on torch, transformers, numpy, json.
 
 ## Usage
 
 ```python
-from classivore.inference.classifier import Classifier
+from classivore.inference import Classifier
 
-clf = Classifier("models/iab-2.2")
-results = clf.predict("Tesla announces new Model Y...")
-# [{"id": "22", "name": "Automotive: Green Vehicles",
-#   "confidence": 0.94, "description": "Electric, hybrid..."}]
+clf = Classifier("models/iab-2.2/20260406_193556")
+results = clf.predict("Tesla announces new Model Y with improved range...")
+# [{"name": "Electric Vehicles", "id": "42", "path": ["Automotive", ...], "confidence": 0.93}]
 
 # Batch prediction
-results = clf.predict_batch(["text1", "text2", ...])
+all_results = clf.predict_batch(["text1", "text2", ...])
+
+# Long documents are automatically chunked with sliding window
 ```
 
-## Loading
+## Model Directory Artifacts
 
-The Classifier loads from a model directory containing:
-- Model weights + tokenizer
-- `per_category_thresholds.json` (falls back to 0.5 global if missing)
-- `taxonomy_enriched.csv` (for returning descriptions with predictions)
-- `label2id.json` / `id2label.json`
+Required for inference:
+- `model.safetensors` + `config.json` — model weights
+- `tokenizer.json` + `tokenizer_config.json` + `spm.model` — tokenizer
+- `label_mappings.json` — index ↔ category name/ID mappings
+- `per_category_thresholds.json` — optimized per-category confidence thresholds
+- `taxonomy_metadata.json` — category paths, depth, is_leaf (generated at training time)
 
 ## Prediction Pipeline
 
-1. Tokenize input text (max_length from model config)
-2. Forward pass through DeBERTa
-3. Sigmoid activation on logits (leaf nodes only)
-4. Apply per-category thresholds
-5. Filter by min_confidence (from taxonomy config)
-6. Sort by confidence descending
-7. Limit to max_labels (from taxonomy config)
-8. For each predicted leaf, walk up taxonomy tree to build full ancestor path
-9. Attach category description from enriched taxonomy
+1. Tokenize input text
+2. If tokens exceed `max_position_embeddings` (512): sliding window chunking with 128-token overlap
+3. Batched forward pass through DeBERTa
+4. Sigmoid activation on logits
+5. If chunked: aggregate probabilities across chunks (max or mean)
+6. Apply per-category thresholds (vectorized)
+7. Build result dicts with name, id, path, confidence
+8. Sort by confidence descending
 
-Note: The model only predicts leaf nodes. The full path (including parent/ancestor
-nodes) is derived from the taxonomy hierarchy in post-processing. Multiple
-predictions can come from completely different branches of the taxonomy.
+## Device Selection
 
-## Performance
+Auto-detects: CUDA > MPS > CPU. FP16 only on CUDA. Inlined in classifier.py (no training module dependency).
 
-- CPU: 50-100 texts/second (sufficient for API serving)
-- MPS: 100-200 texts/second
-- CUDA: 200-500 texts/second
-- Model size: ~1.7GB (DeBERTa-v3-large)
+## CLI
+
+```
+classivore classify --text "Article about sedans..."
+classivore classify --file input.json --output results.json
+classivore classify --interactive
+classivore classify --model-dir models/iab-2.2/20260406_193556 --text "..."
+```
+
+Auto-discovers most recent model in `models/{slug}/` if `--model-dir` not specified.
 
 ## Tests
 
-- `tests/unit/test_classifier.py` — test prediction pipeline, threshold application, description attachment
+- `tests/unit/test_cli.py` — CLI classify routing with mocked Classifier

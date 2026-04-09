@@ -30,6 +30,7 @@ from sklearn.metrics import (
     recall_score,
 )
 
+from classivore.config.defaults import MIN_SAMPLES_FOR_OPTIMIZATION
 from classivore.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -257,11 +258,11 @@ def _compute_per_category(labels, preds, label_names, threshold_vec):
             "recall": round(recall, 4),
             "test_samples": support,
             "threshold": round(float(threshold_vec[i]), 3),
-            "low_confidence": support < 5,
+            "low_confidence": support < MIN_SAMPLES_FOR_OPTIMIZATION,
         }
         per_cat.append(entry)
 
-        if support < 5:
+        if support < MIN_SAMPLES_FOR_OPTIMIZATION:
             low_confidence.append(name)
 
     per_cat.sort(key=lambda x: x["f1"])

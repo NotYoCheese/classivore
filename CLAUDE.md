@@ -20,7 +20,8 @@ Read the relevant file before modifying that subsystem:
 - [Training](docs/claude/training.md) — DeBERTa trainer, focal loss, thresholds
 - [Validation](docs/claude/validation.md) — data quality checks via label-lens
 - [Inference](docs/claude/inference.md) — classifier loading, prediction, batch
-- [Agent](docs/claude/agent.md) — data expansion agent, LangGraph workflow
+- [Agent](docs/claude/agent.md) — data expansion agent, collect/label/evaluate loop
+- [Publishing](docs/claude/publishing.md) — HuggingFace model publishing, artifact contract
 - [CLI](docs/claude/cli.md) — command structure, argument patterns
 
 ## Rules

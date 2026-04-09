@@ -46,7 +46,6 @@ class IterationPlan:
     """Thin audit record of what the agent intended for one iteration."""
     iteration: int
     target_categories: list[str]
-    use_llm_queries: bool = False
 
 
 @dataclass

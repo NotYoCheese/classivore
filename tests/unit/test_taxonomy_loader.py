@@ -15,15 +15,15 @@ from classivore.taxonomy.loader import (
 )
 
 SAMPLE_CSV = """\
-id,parent_id,name,display_name,path,depth,is_leaf,children_count
-1,,Automotive,Automotive: Automotive,Automotive,1,False,2
-2,1,Auto Body Styles,Automotive: Auto Body Styles,Automotive > Auto Body Styles,2,False,3
-3,2,Sedan,Automotive: Sedan,Automotive > Auto Body Styles > Sedan,3,True,0
-4,2,SUV,Automotive: SUV,Automotive > Auto Body Styles > SUV,3,True,0
-5,2,Coupe,Automotive: Coupe,Automotive > Auto Body Styles > Coupe,3,True,0
-6,1,Auto Type,Automotive: Auto Type,Automotive > Auto Type,2,False,2
-7,6,Budget Cars,Automotive: Budget Cars,Automotive > Auto Type > Budget Cars,3,True,0
-8,6,Luxury Cars,Automotive: Luxury Cars,Automotive > Auto Type > Luxury Cars,3,True,0
+id,parent_id,name,display_name,path,depth,is_leaf,children_count,aliases,difficulty
+1,,Automotive,Automotive: Automotive,Automotive,1,False,2,cars | vehicles | autos,easy
+2,1,Auto Body Styles,Automotive: Auto Body Styles,Automotive > Auto Body Styles,2,False,3,,medium
+3,2,Sedan,Automotive: Sedan,Automotive > Auto Body Styles > Sedan,3,True,0,4-door car | saloon | family car,medium
+4,2,SUV,Automotive: SUV,Automotive > Auto Body Styles > SUV,3,True,0,,
+5,2,Coupe,Automotive: Coupe,Automotive > Auto Body Styles > Coupe,3,True,0,2-door car | sports coupe,medium
+6,1,Auto Type,Automotive: Auto Type,Automotive > Auto Type,2,False,2,,hard
+7,6,Budget Cars,Automotive: Budget Cars,Automotive > Auto Type > Budget Cars,3,True,0,cheap cars | affordable cars,easy
+8,6,Luxury Cars,Automotive: Luxury Cars,Automotive > Auto Type > Luxury Cars,3,True,0,premium cars | high-end vehicles,easy
 """
 
 
@@ -76,6 +76,30 @@ class TestLoadTaxonomy:
         cats = load_taxonomy(taxonomy_csv)
         assert all(c["description"] == "" for c in cats)
         assert all(c["boundaries"] == "" for c in cats)
+
+    def test_aliases_parsing(self, taxonomy_csv):
+        cats = load_taxonomy(taxonomy_csv)
+        root = next(c for c in cats if c["name"] == "Automotive")
+        assert root["aliases"] == ["cars", "vehicles", "autos"]
+        sedan = next(c for c in cats if c["name"] == "Sedan")
+        assert sedan["aliases"] == ["4-door car", "saloon", "family car"]
+
+    def test_aliases_empty(self, taxonomy_csv):
+        cats = load_taxonomy(taxonomy_csv)
+        suv = next(c for c in cats if c["name"] == "SUV")
+        assert suv["aliases"] == []
+
+    def test_difficulty_parsing(self, taxonomy_csv):
+        cats = load_taxonomy(taxonomy_csv)
+        root = next(c for c in cats if c["name"] == "Automotive")
+        assert root["difficulty"] == "easy"
+        auto_type = next(c for c in cats if c["name"] == "Auto Type")
+        assert auto_type["difficulty"] == "hard"
+
+    def test_difficulty_defaults_to_medium(self, taxonomy_csv):
+        cats = load_taxonomy(taxonomy_csv)
+        suv = next(c for c in cats if c["name"] == "SUV")
+        assert suv["difficulty"] == "medium"
 
     def test_missing_file_raises(self, taxonomy_csv):
         taxonomy_csv.taxonomy_file = Path("/nonexistent/taxonomy.csv")
@@ -138,8 +162,14 @@ class TestSaveEnrichedTaxonomy:
         assert len(reloaded) == len(cats)
         assert reloaded[0]["description"] == "Vehicles and transportation"
         assert reloaded[0]["boundaries"] == "Distinct from Travel by focus on vehicles"
+        assert reloaded[0]["aliases"] == ["cars", "vehicles", "autos"]
+        assert reloaded[0]["difficulty"] == "easy"
         assert reloaded[2]["path"] == ["Automotive", "Auto Body Styles", "Sedan"]
         assert reloaded[2]["is_leaf"] is True
+        assert reloaded[2]["aliases"] == ["4-door car", "saloon", "family car"]
+        # SUV has empty aliases
+        assert reloaded[3]["aliases"] == []
+        assert reloaded[3]["difficulty"] == "medium"
 
     def test_creates_parent_dirs(self, tmp_path):
         output_path = tmp_path / "sub" / "dir" / "enriched.csv"

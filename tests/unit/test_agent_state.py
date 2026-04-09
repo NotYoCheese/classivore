@@ -13,7 +13,6 @@ def _make_plan(iteration=0):
     return IterationPlan(
         iteration=iteration,
         target_categories=["Sedan", "SUV"],
-        use_llm_queries=False,
     )
 
 

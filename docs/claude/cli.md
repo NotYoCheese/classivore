@@ -5,6 +5,7 @@
 All CLI entry points live in `cli/` and are registered in `pyproject.toml` as console scripts.
 
 ```
+classivore init      — Initialize new taxonomy (validate CSV, enrich, configure)
 classivore enrich    — Enrich taxonomy with LLM-generated descriptions
 classivore collect   — Collect training data (Common Crawl + live scrape)
 classivore validate  — Validate data quality (scraped or labeled)
@@ -12,8 +13,11 @@ classivore label     — Label scraped data with LLM
 classivore train     — Train DeBERTa model
 classivore classify  — Run inference (text, file, or interactive)
 classivore agent     — Run data expansion agent
-classivore serve     — Start local API server
-classivore taxonomy  — Show taxonomy info (categories, stats, coverage)
+classivore hints     — Generate domain hints for tier1 categories
+classivore publish   — Publish trained model to HuggingFace Hub
+classivore hf init   — Create HuggingFace repo
+classivore taxonomy  — Show taxonomy info, stats, and coverage gaps
+classivore serve     — Start local API server (stub)
 ```
 
 ## Common Arguments

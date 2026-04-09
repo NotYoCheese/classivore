@@ -23,6 +23,7 @@ dependencies = [
     "scikit-learn>=1.3.0",
     "numpy>=1.24.0",
     "protobuf>=3.20.0",
+    "huggingface_hub>=0.23.0",
     "pyyaml>=6.0",
     "sentencepiece>=0.1.99",
     "structlog>=24.1.0",
