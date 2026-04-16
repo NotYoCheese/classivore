@@ -11,12 +11,18 @@ Return value convention for all providers:
 - [...]: search succeeded with results
 """
 
-import json
 import os
 import time
 
 import requests
 from dotenv import load_dotenv
+
+try:
+    from exa_py import Exa as _Exa
+    _EXA_AVAILABLE = True
+except ImportError:
+    _Exa = None
+    _EXA_AVAILABLE = False
 
 from classivore.logging_config import get_logger
 
@@ -196,11 +202,104 @@ def _parse_serper_results(data):
     ]
 
 
+# --- Exa neural search ---
+
+EXA_REQUEST_INTERVAL = 0.5
+
+
+def search_exa(query, api_key, count=10):
+    """Execute an Exa neural search query with full page text included.
+
+    Unlike keyword-based providers, Exa uses semantic/neural matching and
+    returns extracted page text directly — allowing the collection loop to
+    skip live scraping for these results.
+
+    Args:
+        query: Search query string.
+        api_key: Exa API key (EXA_API_KEY).
+        count: Number of results to request.
+
+    Returns:
+        List of result dicts (including 'text' field), empty list on
+        successful-but-empty, or None on auth failure / retries exhausted.
+    """
+    if not _EXA_AVAILABLE:
+        logger.warning("exa_py_not_installed")
+        return None
+
+    exa = _Exa(api_key=api_key)
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = exa.search_and_contents(
+                query,
+                type="auto",
+                num_results=count,
+                text={"max_characters": 20000},
+            )
+            time.sleep(EXA_REQUEST_INTERVAL)
+            return _parse_exa_results(response)
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(x in err_str for x in ("401", "403", "unauthorized", "forbidden", "invalid api key")):
+                logger.warning("exa_quota_or_auth_failure", error=str(e))
+                return None
+            delay = BACKOFF_DELAYS[min(attempt, len(BACKOFF_DELAYS) - 1)]
+            logger.info("exa_transient_error", attempt=attempt + 1, backoff_seconds=delay, error=str(e))
+            time.sleep(delay)
+
+    logger.warning("exa_retries_exhausted", query=query)
+    return None
+
+
+def _parse_exa_results(response):
+    """Parse Exa search_and_contents response."""
+    return [
+        {
+            "url": r.url,
+            "title": r.title or "",
+            "description": "",
+            "text": r.text or "",
+        }
+        for r in response.results
+        if r.url
+    ]
+
+
+def fetch_exa_content(url, api_key):
+    """Fetch page content for a known URL via Exa's /contents endpoint.
+
+    Used as a fallback when Common Crawl and live scraping both fail (e.g.
+    WAF blocks, timeouts). Exa fetches and caches content through their own
+    infrastructure, bypassing site-level blocks.
+
+    Args:
+        url: URL to retrieve content for.
+        api_key: Exa API key.
+
+    Returns:
+        Extracted text string, or None on failure.
+    """
+    if not _EXA_AVAILABLE:
+        return None
+
+    try:
+        exa = _Exa(api_key=api_key)
+        response = exa.get_contents([url], text={"max_characters": 20000})
+        if response.results:
+            return response.results[0].text or None
+        return None
+    except Exception as e:
+        logger.info("exa_content_fetch_failed", url=url, error=str(e))
+        return None
+
+
 # --- Provider registry ---
 
 PROVIDERS = {
     "brave": search_brave,
     "serper": search_serper,
+    "exa": search_exa,
 }
 
 
@@ -258,6 +357,24 @@ class SearchClient:
         # All providers exhausted or failed
         return None
 
+    def fetch_content(self, url):
+        """Fetch content for a known URL using Exa's /contents endpoint.
+
+        Used as a scrape fallback. Only attempts if Exa is configured and
+        not exhausted.
+
+        Returns:
+            Extracted text string, or None if Exa is unavailable or failed.
+        """
+        exa_provider = next(
+            (p for p in self.providers
+             if p["name"] == "exa" and p["name"] not in self.exhausted),
+            None,
+        )
+        if not exa_provider:
+            return None
+        return fetch_exa_content(url, exa_provider["api_key"])
+
     def reset_exhausted(self):
         """Reset exhausted providers (e.g. at start of a new run)."""
         self.exhausted.clear()
@@ -275,9 +392,10 @@ class SearchClient:
         """
         provider_configs = getattr(config, "search_providers", None)
         if not provider_configs:
-            # Default: try brave, then serper
+            # Default: keyword search first, then Exa neural search as final fallback
             provider_configs = [
                 {"name": "brave", "api_key_env": "BRAVE_API_KEY"},
                 {"name": "serper", "api_key_env": "SERPER_API_KEY"},
+                {"name": "exa", "api_key_env": "EXA_API_KEY"},
             ]
         return cls(provider_configs)
