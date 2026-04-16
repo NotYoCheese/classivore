@@ -288,6 +288,70 @@ class TestSIGINT:
 
 
 
+class TestPrefetchedText:
+    @patch("classivore.collection.fetch_page")
+    @patch("classivore.collection.SearchClient")
+    def test_exa_results_skip_fetch(self, mock_client_cls, mock_fetch, tmp_path):
+        """When search results include 'text' (Exa), fetch_page is not called."""
+        words = _words(200)
+        client = _mock_search_client([
+            {
+                "url": "https://example.com/sedan-article-one",
+                "title": "A",
+                "description": "",
+                "text": words,
+            },
+        ])
+        mock_client_cls.from_config.return_value = client
+
+        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path)
+
+        assert summary["total_collected"] == 1
+        mock_fetch.assert_not_called()
+
+    @patch("classivore.collection.fetch_page")
+    @patch("classivore.collection.SearchClient")
+    def test_exa_fallback_when_scrape_fails(self, mock_client_cls, mock_fetch, tmp_path):
+        """When scraping fails, Exa /contents is tried as a fallback."""
+        words = _words(200)
+        client = _mock_search_client([
+            {"url": "https://example.com/sedan-article-one", "title": "A", "description": ""},
+        ])
+        client.fetch_content = MagicMock(return_value=words)
+        mock_client_cls.from_config.return_value = client
+        mock_fetch.return_value = None  # scrape fails
+
+        summary = run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path)
+
+        assert summary["total_collected"] == 1
+        client.fetch_content.assert_called_once_with("https://example.com/sedan-article-one")
+
+        corpus_file = tmp_path / "corpus" / "pages.json"
+        page = json.loads(corpus_file.read_text().strip())
+        assert page["source"] == "exa"
+
+    @patch("classivore.collection.fetch_page")
+    @patch("classivore.collection.SearchClient")
+    def test_exa_source_recorded(self, mock_client_cls, mock_fetch, tmp_path):
+        """Pages from Exa results are recorded with source='exa'."""
+        words = _words(200)
+        client = _mock_search_client([
+            {
+                "url": "https://example.com/sedan-article-one",
+                "title": "A",
+                "description": "",
+                "text": words,
+            },
+        ])
+        mock_client_cls.from_config.return_value = client
+
+        run_collection(config=_make_config(), categories=_make_categories(), data_dir=tmp_path)
+
+        corpus_file = tmp_path / "corpus" / "pages.json"
+        page = json.loads(corpus_file.read_text().strip())
+        assert page["source"] == "exa"
+
+
 class TestAuditDomains:
     def test_audit_returns_report(self, tmp_path):
         from classivore.collection import audit_domains

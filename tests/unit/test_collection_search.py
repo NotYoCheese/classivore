@@ -12,8 +12,11 @@ from classivore.collection.search import (
     SERPER_API_URL,
     SearchClient,
     _parse_brave_results,
+    _parse_exa_results,
     _parse_serper_results,
+    fetch_exa_content,
     search_brave,
+    search_exa,
     search_serper,
 )
 
@@ -223,6 +226,176 @@ class TestSearchSerper:
         assert results == []
 
 
+# --- Exa parsing ---
+
+def _make_exa_result(url="https://example.com/a", title="Article A", text="Full article text."):
+    r = MagicMock()
+    r.url = url
+    r.title = title
+    r.text = text
+    return r
+
+
+def _make_exa_response(results=None):
+    resp = MagicMock()
+    resp.results = [_make_exa_result()] if results is None else results
+    return resp
+
+
+class TestParseExaResults:
+    def test_extracts_results(self):
+        response = _make_exa_response([
+            _make_exa_result("https://example.com/a", "Article A", "Text A"),
+            _make_exa_result("https://example.com/b", "Article B", "Text B"),
+        ])
+        results = _parse_exa_results(response)
+        assert len(results) == 2
+        assert results[0]["url"] == "https://example.com/a"
+        assert results[0]["title"] == "Article A"
+        assert results[0]["text"] == "Text A"
+
+    def test_includes_text_field(self):
+        response = _make_exa_response([_make_exa_result(text="Full page content here.")])
+        results = _parse_exa_results(response)
+        assert results[0]["text"] == "Full page content here."
+
+    def test_empty_response(self):
+        response = _make_exa_response([])
+        assert _parse_exa_results(response) == []
+
+    def test_skips_results_without_url(self):
+        r = _make_exa_result()
+        r.url = None
+        response = _make_exa_response([r])
+        assert _parse_exa_results(response) == []
+
+    def test_handles_none_text(self):
+        response = _make_exa_response([_make_exa_result(text=None)])
+        results = _parse_exa_results(response)
+        assert results[0]["text"] == ""
+
+    def test_handles_none_title(self):
+        response = _make_exa_response([_make_exa_result(title=None)])
+        results = _parse_exa_results(response)
+        assert results[0]["title"] == ""
+
+
+# --- Exa provider ---
+
+class TestSearchExa:
+    def _make_mock_exa(self, response=None):
+        mock_exa = MagicMock()
+        mock_exa.search_and_contents.return_value = response or _make_exa_response()
+        return mock_exa
+
+    @patch("classivore.collection.search.time.sleep")
+    @patch("classivore.collection.search._Exa")
+    def test_successful_search(self, mock_exa_cls, mock_sleep):
+        mock_exa_cls.return_value = self._make_mock_exa()
+        results = search_exa("test query", api_key="key")
+        assert len(results) == 1
+        assert results[0]["url"] == "https://example.com/a"
+        assert results[0]["text"] == "Full article text."
+
+    @patch("classivore.collection.search.time.sleep")
+    @patch("classivore.collection.search._Exa")
+    def test_passes_query_and_count(self, mock_exa_cls, mock_sleep):
+        mock_exa = self._make_mock_exa()
+        mock_exa_cls.return_value = mock_exa
+        search_exa("sedan guide", api_key="key", count=5)
+        call_kwargs = mock_exa.search_and_contents.call_args
+        assert call_kwargs.args[0] == "sedan guide"
+        assert call_kwargs.kwargs["num_results"] == 5
+
+    @patch("classivore.collection.search.time.sleep")
+    @patch("classivore.collection.search._Exa")
+    def test_returns_none_on_auth_error(self, mock_exa_cls, mock_sleep):
+        mock_exa = MagicMock()
+        mock_exa.search_and_contents.side_effect = Exception("401 Unauthorized")
+        mock_exa_cls.return_value = mock_exa
+        result = search_exa("test", api_key="bad-key")
+        assert result is None
+        assert mock_exa.search_and_contents.call_count == 1  # no retry on auth error
+
+    @patch("classivore.collection.search.time.sleep")
+    @patch("classivore.collection.search._Exa")
+    def test_retries_on_transient_error(self, mock_exa_cls, mock_sleep):
+        mock_exa = MagicMock()
+        mock_exa.search_and_contents.side_effect = [
+            Exception("connection reset"),
+            _make_exa_response(),
+        ]
+        mock_exa_cls.return_value = mock_exa
+        results = search_exa("test", api_key="key")
+        assert results is not None
+        assert mock_exa.search_and_contents.call_count == 2
+
+    @patch("classivore.collection.search.time.sleep")
+    @patch("classivore.collection.search._Exa")
+    def test_returns_none_after_retries_exhausted(self, mock_exa_cls, mock_sleep):
+        mock_exa = MagicMock()
+        mock_exa.search_and_contents.side_effect = Exception("network error")
+        mock_exa_cls.return_value = mock_exa
+        result = search_exa("test", api_key="key")
+        assert result is None
+        assert mock_exa.search_and_contents.call_count == 3
+
+    @patch("classivore.collection.search._EXA_AVAILABLE", False)
+    def test_returns_none_when_not_installed(self):
+        result = search_exa("test", api_key="key")
+        assert result is None
+
+
+# --- Exa content fetch ---
+
+class TestFetchExaContent:
+    def _make_mock_exa_with_content(self, text="Page content here."):
+        result = MagicMock()
+        result.text = text
+        response = MagicMock()
+        response.results = [result]
+        mock_exa = MagicMock()
+        mock_exa.get_contents.return_value = response
+        return mock_exa
+
+    @patch("classivore.collection.search._Exa")
+    def test_returns_text(self, mock_exa_cls):
+        mock_exa_cls.return_value = self._make_mock_exa_with_content("Article text.")
+        text = fetch_exa_content("https://example.com/article", api_key="key")
+        assert text == "Article text."
+
+    @patch("classivore.collection.search._Exa")
+    def test_passes_url(self, mock_exa_cls):
+        mock_exa = self._make_mock_exa_with_content()
+        mock_exa_cls.return_value = mock_exa
+        fetch_exa_content("https://example.com/article", api_key="key")
+        mock_exa.get_contents.assert_called_once_with(
+            ["https://example.com/article"],
+            text={"max_characters": 20000},
+        )
+
+    @patch("classivore.collection.search._Exa")
+    def test_returns_none_on_empty_results(self, mock_exa_cls):
+        mock_exa = MagicMock()
+        mock_exa.get_contents.return_value = MagicMock(results=[])
+        mock_exa_cls.return_value = mock_exa
+        result = fetch_exa_content("https://example.com/article", api_key="key")
+        assert result is None
+
+    @patch("classivore.collection.search._Exa")
+    def test_returns_none_on_exception(self, mock_exa_cls):
+        mock_exa = MagicMock()
+        mock_exa.get_contents.side_effect = Exception("not found")
+        mock_exa_cls.return_value = mock_exa
+        result = fetch_exa_content("https://example.com/article", api_key="key")
+        assert result is None
+
+    @patch("classivore.collection.search._EXA_AVAILABLE", False)
+    def test_returns_none_when_not_installed(self):
+        result = fetch_exa_content("https://example.com/article", api_key="key")
+        assert result is None
+
+
 # --- SearchClient ---
 
 class TestSearchClient:
@@ -318,14 +491,39 @@ class TestSearchClient:
         client.exhausted.add("brave")
         assert client.active_provider_count == 1
 
-    @patch.dict("os.environ", {"BRAVE_API_KEY": "test-brave", "SERPER_API_KEY": "test-serper"})
+    @patch("classivore.collection.search.fetch_exa_content")
+    def test_fetch_content_delegates_to_exa(self, mock_fetch):
+        mock_fetch.return_value = "Article text."
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [self._make_provider("exa", search_exa)]
+        client.exhausted = set()
+        result = client.fetch_content("https://example.com/article")
+        assert result == "Article text."
+        mock_fetch.assert_called_once_with("https://example.com/article", "test-key")
+
+    def test_fetch_content_returns_none_when_no_exa(self):
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [self._make_provider("brave", search_brave)]
+        client.exhausted = set()
+        result = client.fetch_content("https://example.com/article")
+        assert result is None
+
+    def test_fetch_content_returns_none_when_exa_exhausted(self):
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [self._make_provider("exa", search_exa)]
+        client.exhausted = {"exa"}
+        result = client.fetch_content("https://example.com/article")
+        assert result is None
+
+    @patch.dict("os.environ", {"BRAVE_API_KEY": "test-brave", "SERPER_API_KEY": "test-serper", "EXA_API_KEY": "test-exa"})
     def test_from_config_default_providers(self):
         config = MagicMock()
         config.search_providers = None
         client = SearchClient.from_config(config)
-        assert len(client.providers) == 2
+        assert len(client.providers) == 3
         assert client.providers[0]["name"] == "brave"
         assert client.providers[1]["name"] == "serper"
+        assert client.providers[2]["name"] == "exa"
 
     @patch.dict("os.environ", {"BRAVE_API_KEY": "test-brave"}, clear=False)
     def test_from_config_skips_missing_keys(self):
