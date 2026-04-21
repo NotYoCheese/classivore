@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-04-21
+
+### Inference
+
+- `Classifier` now dispatches the output activation based on the model's
+  `problem_type` in `config.json`:
+  - `multi_label_classification` → sigmoid (existing behavior)
+  - `single_label_classification` → softmax (probabilities sum to 1 per row)
+  - `regression` → raises `NotImplementedError`
+  - missing / null → defaults to multi-label (preserves legacy behavior)
+- Default per-category threshold floor is now `0.0` for single-label models
+  (so softmax results aren't silently suppressed by the multi-label `0.5` default).
+  Multi-label models still default to `0.5`. Per-category threshold files
+  always take precedence when present.
+- Allows dropping in off-the-shelf HuggingFace single-label classifiers
+  (e.g. sentiment, toxicity) alongside classivore-trained multi-label models.
+
 ## [1.0.0] - 2026-04-06
 
 First release. Full pipeline from taxonomy enrichment to trained classifier.

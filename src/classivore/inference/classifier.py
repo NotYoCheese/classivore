@@ -34,8 +34,9 @@ def _select_device(override=None):
     return "cpu", False
 
 
-def _run_inference(model, tokenizer, texts, batch_size, max_length, device):
-    """Run batched inference and return sigmoid probabilities.
+def _run_inference(model, tokenizer, texts, batch_size, max_length, device,
+                   problem_type="multi_label_classification"):
+    """Run batched inference and return activation-appropriate probabilities.
 
     Args:
         model: HuggingFace model in eval mode.
@@ -44,10 +45,19 @@ def _run_inference(model, tokenizer, texts, batch_size, max_length, device):
         batch_size: Inference batch size.
         max_length: Max token length.
         device: Device string.
+        problem_type: One of:
+            - "multi_label_classification" → sigmoid (independent per-class probs)
+            - "single_label_classification" → softmax (probs sum to 1 per row)
+            - "regression" → raises NotImplementedError
 
     Returns:
-        Numpy array of shape (num_texts, num_classes) with sigmoid probabilities.
+        Numpy array of shape (num_texts, num_classes) with probabilities.
     """
+    if problem_type == "regression":
+        raise NotImplementedError(
+            "regression models are not supported by the inference pipeline"
+        )
+
     all_probs = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
@@ -60,8 +70,11 @@ def _run_inference(model, tokenizer, texts, batch_size, max_length, device):
         ).to(device)
 
         with torch.no_grad():
-            outputs = model(**encoding)
-            probs = torch.sigmoid(outputs.logits).cpu().numpy()
+            logits = model(**encoding).logits
+            if problem_type == "single_label_classification":
+                probs = torch.softmax(logits, dim=-1).cpu().numpy()
+            else:
+                probs = torch.sigmoid(logits).cpu().numpy()
             all_probs.append(probs)
 
     return np.concatenate(all_probs, axis=0)
@@ -104,10 +117,13 @@ class Classifier:
 
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir))
 
-        # Max length from model config
+        # Max length and problem type from model config
         with open(self.model_dir / "config.json") as f:
             model_config = json.load(f)
         self.max_length = model_config.get("max_position_embeddings", 512)
+        # HuggingFace writes problem_type when the training script sets it; when missing
+        # (or null), default to multi_label — the historical classivore behavior.
+        self.problem_type = model_config.get("problem_type") or "multi_label_classification"
 
         # Label mappings
         with open(self.model_dir / "label_mappings.json") as f:
@@ -124,9 +140,12 @@ class Classifier:
         else:
             thresholds = {}
 
-        # Build threshold vector ordered by index
+        # Default threshold: 0.5 for sigmoid (multi-label), 0.0 for softmax (single-label).
+        # Softmax probabilities for many-class problems are often <0.5 even for the winning
+        # class, so the multi-label default would suppress valid predictions.
+        default_threshold = 0.0 if self.problem_type == "single_label_classification" else 0.5
         self.threshold_vec = np.array([
-            thresholds.get(self.index_to_name[str(i)], 0.5)
+            thresholds.get(self.index_to_name[str(i)], default_threshold)
             for i in range(self.num_classes)
         ])
 
@@ -185,11 +204,13 @@ class Classifier:
             all_probs = _run_inference(
                 self.model, self.tokenizer, texts,
                 batch_size, self.max_length, self.device,
+                problem_type=self.problem_type,
             )
         else:
             all_probs = _run_inference(
                 self.model, self.tokenizer, all_chunks,
                 batch_size, self.max_length, self.device,
+                problem_type=self.problem_type,
             )
 
         # Regroup and aggregate per text
