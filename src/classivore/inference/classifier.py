@@ -106,9 +106,14 @@ class Classifier:
         # Device selection
         self.device, use_fp16 = _select_device(device)
 
-        # Load model and tokenizer
+        # Load model and tokenizer.
+        # low_cpu_mem_usage=False forces eager weight loading and skips the
+        # meta-tensor path. On some linux/amd64 + transformers 4.x installs,
+        # the meta path leaves tied/shared params uninitialized, and the
+        # subsequent `.to(device)` fails with "Cannot copy out of meta tensor".
         self.model = AutoModelForSequenceClassification.from_pretrained(
             str(self.model_dir),
+            low_cpu_mem_usage=False,
         )
         self.model.to(self.device)
         if use_fp16:

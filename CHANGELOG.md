@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-04-21
+
+### Inference
+
+- Force eager weight loading (`low_cpu_mem_usage=False`) in `Classifier` to
+  avoid a meta-tensor race under thread-pool concurrency. Previously, multiple
+  threads loading the same model could leave some parameters on the meta
+  device, causing `.to(device)` to raise
+  `NotImplementedError: Cannot copy out of meta tensor; no data!` — observed
+  in the classivore-api container on linux/amd64. No accuracy change.
+
 ## [1.2.0] - 2026-04-21
 
 ### Inference
