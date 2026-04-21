@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "classivore"
-version = "0.1.1"
+version = "1.2.0"
 description = "Taxonomy-agnostic text classification pipeline"
 readme = "README.md"
 license = {text = "MIT"}

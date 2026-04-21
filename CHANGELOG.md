@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.1] - 2026-04-21
+## [1.2.0] - 2026-04-21
 
 ### Inference
 
@@ -18,6 +18,21 @@ All notable changes to this project will be documented in this file.
   always take precedence when present.
 - Allows dropping in off-the-shelf HuggingFace single-label classifiers
   (e.g. sentiment, toxicity) alongside classivore-trained multi-label models.
+
+### Collection
+
+- Added Exa AI as a third search provider with two roles:
+  - Neural/semantic search fallback when Brave and Serper are exhausted
+  - Scrape fallback via Exa `/contents` when live scraping is blocked (WAFs, etc.)
+- Exa search results include prefetched page text, so the collector skips the
+  scrape step entirely for those URLs.
+
+### Docs
+
+- Expanded README with a full "API Keys & External Services" section
+  documenting every external service (Anthropic, Brave, Serper, Exa,
+  HuggingFace, Common Crawl), which commands use each one, where to get keys,
+  and which features are enabled by each.
 
 ## [1.0.0] - 2026-04-06
 
