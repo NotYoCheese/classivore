@@ -123,11 +123,68 @@ src/classivore/
   validation/     Data quality checks
 ```
 
+## API Keys & External Services
+
+Create a `.env` file in the project root and add the keys you need:
+
+```env
+ANTHROPIC_API_KEY=...
+BRAVE_API_KEY=...
+SERPER_API_KEY=...
+EXA_API_KEY=...
+HUGGINGFACE_TOKEN=...
+```
+
+### Anthropic API — **Required** for enrichment and labeling
+
+Used by: `classivore enrich`, `classivore label`, `classivore hints`, `classivore collect` (LLM query generation)
+
+Get a key at [console.anthropic.com](https://console.anthropic.com). Set `ANTHROPIC_API_KEY` (or `CLASSIVORE_API_KEY` if you want to use a separate key).
+
+Enrichment and labeling are the most API-intensive stages. Both use the Batch API for a 50% cost reduction. A rough estimate for the IAB 2.2 taxonomy (~700 categories, ~30K pages): enrichment ~$1–2, labeling ~$15–25 depending on model choice.
+
+### Brave Search — **Optional**, recommended for collection
+
+Used by: `classivore collect`
+
+Get a key at [api.search.brave.com](https://api.search.brave.com). Set `BRAVE_API_KEY`. The free plan includes 2,000 queries/month.
+
+Brave is the first provider tried for keyword search. Without at least one search provider, collection cannot discover new URLs.
+
+### Serper — **Optional**, Brave fallback
+
+Used by: `classivore collect`
+
+Get a key at [serper.dev](https://serper.dev). Set `SERPER_API_KEY`. Returns Google results. Used automatically when Brave's quota is exhausted.
+
+### Exa AI — **Optional**, semantic search and scrape fallback
+
+Used by: `classivore collect`
+
+Get a key at [dashboard.exa.ai](https://dashboard.exa.ai). Set `EXA_API_KEY`.
+
+Exa serves two roles in the collection pipeline:
+
+1. **Neural search fallback** — when Brave and Serper are both exhausted, Exa's semantic search finds relevant pages for hard categories where keyword queries underperform.
+2. **Scrape fallback** — when live scraping fails (WAF blocks, 403s), Exa's `/contents` endpoint retrieves the page through their own infrastructure. Pages fetched this way bypass site-level blocks entirely.
+
+Results from Exa include full page text, so pages retrieved via Exa skip the scraping step.
+
+### HuggingFace Hub — **Required** for publishing
+
+Used by: `classivore publish`, `classivore hf init`
+
+Get a write-access token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Set `HUGGINGFACE_TOKEN`, or pass `--token` directly to the publish command.
+
+### Common Crawl — **No key required**
+
+Used by: `classivore collect`
+
+Classivore queries the Common Crawl CDX index for historical page snapshots before attempting live scrapes. No API key needed. The crawl ID is configured per-taxonomy in `config.yaml` (`commoncrawl_crawl_id`). Set to `null` to disable.
+
 ## Requirements
 
 - Python >= 3.11
-- Anthropic API key (for enrichment and labeling)
-- Search API key: Brave and/or Serper (for collection)
 - GPU recommended for training (RTX 4090: ~45 min for 30K pages)
 
 ## License

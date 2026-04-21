@@ -229,10 +229,14 @@ def run_collection(config, categories, data_dir, resume=True,
                     if state.get_domain_count(cat["name"], domain) >= config.max_per_domain_per_category:
                         continue
 
-                    # Retrieve content: Common Crawl first (if available), then live scrape
+                    # Retrieve content: use prefetched text if available (e.g. Exa),
+                    # otherwise try Common Crawl → live scrape → Exa /contents
+                    prefetched_text = result.get("text") or None
                     page = _retrieve_and_filter(
                         url, cat["name"], config, state, domains, seen_hashes,
                         use_cdx=cdx_available, relaxations=relaxations,
+                        prefetched_text=prefetched_text,
+                        search_client=search_client,
                     )
 
                     if page:
@@ -340,29 +344,48 @@ def _generate_llm_queries(cat, categories, config, tried, queries_only):
 
 
 def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,
-                         use_cdx=True, relaxations=None):
-    """Try to retrieve and filter a single URL. Returns page dict or None."""
-    html = None
-    source = "commoncrawl"
+                         use_cdx=True, relaxations=None, prefetched_text=None,
+                         search_client=None):
+    """Try to retrieve and filter a single URL. Returns page dict or None.
 
-    # Try Common Crawl first (if CDX is available)
-    if use_cdx and config.commoncrawl_crawl_id:
-        records = lookup_cdx(url, crawl_id=config.commoncrawl_crawl_id)
-        if records:
-            html = fetch_warc_record(records[0])
+    Fetch priority:
+    1. prefetched_text — content already retrieved (e.g. from Exa search results)
+    2. Common Crawl — fast, no WAF issues
+    3. Live scrape — direct HTTP fetch
+    4. Exa /contents — fallback when scraping fails (WAF blocks, timeouts)
+    """
+    if prefetched_text:
+        text = prefetched_text
+        source = "exa"
+    else:
+        html = None
+        source = "commoncrawl"
 
-    # Fallback to live scrape
-    if not html:
-        source = "live_scrape"
-        html = fetch_page(url)
+        # Try Common Crawl first (if CDX is available)
+        if use_cdx and config.commoncrawl_crawl_id:
+            records = lookup_cdx(url, crawl_id=config.commoncrawl_crawl_id)
+            if records:
+                html = fetch_warc_record(records[0])
 
-    if not html:
-        state.record_url(url, category, "failed", source)
-        domains.record_result(urlparse(url).netloc, success=False)
-        return None
+        # Fallback to live scrape
+        if not html:
+            source = "live_scrape"
+            html = fetch_page(url)
 
-    # Extract text
-    text = extract_text(html)
+        text = extract_text(html) if html else None
+
+        # Exa /contents fallback when CDX and scraping both failed
+        if not text and search_client:
+            exa_text = search_client.fetch_content(url)
+            if exa_text:
+                text = exa_text
+                source = "exa"
+
+        if not text:
+            state.record_url(url, category, "failed", source)
+            domains.record_result(urlparse(url).netloc, success=False)
+            return None
+
     if not text:
         state.record_url(url, category, "failed", source)
         domains.record_result(urlparse(url).netloc, success=False)
