@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_OVERLAP = 128
 DEFAULT_BATCH_SIZE = 32
 
+# RoBERTa and its derivatives offset position_ids by `padding_idx + 1` inside
+# the embedding layer, so usable input length is `max_position_embeddings -
+# pad_token_id - 1`, not `max_position_embeddings` itself. Models in this set
+# trigger the offset; everything else (BERT, DeBERTa, etc.) does not.
+_ROBERTA_FAMILY_MODEL_TYPES = frozenset({
+    "roberta",
+    "xlm-roberta",
+    "xlm_roberta",
+    "camembert",
+    "longformer",
+    "xmod",
+})
+
 
 def _select_device(override=None):
     """Auto-detect best available device.
@@ -125,7 +138,22 @@ class Classifier:
         # Max length and problem type from model config
         with open(self.model_dir / "config.json") as f:
             model_config = json.load(f)
-        self.max_length = model_config.get("max_position_embeddings", 512)
+        # max_position_embeddings is the size of the position-embedding table,
+        # not always the usable input length. RoBERTa-family models offset
+        # position_ids by pad_token_id+1, so a config of 514 only permits 512
+        # input tokens — passing 513+ raises IndexError in the embedding
+        # lookup. HuggingFace's RoBERTa tokenizers report model_max_length as
+        # a sentinel (~1e30), so we can't rely on that alone. Subtract the
+        # offset when the model_type is in the RoBERTa family, then clamp
+        # against tokenizer.model_max_length when it carries a real value.
+        config_max = model_config.get("max_position_embeddings", 512)
+        if model_config.get("model_type") in _ROBERTA_FAMILY_MODEL_TYPES:
+            config_max = config_max - model_config.get("pad_token_id", 1) - 1
+        tokenizer_max = getattr(self.tokenizer, "model_max_length", None)
+        if isinstance(tokenizer_max, int) and tokenizer_max < 1_000_000:
+            self.max_length = min(tokenizer_max, config_max)
+        else:
+            self.max_length = config_max
         # HuggingFace writes problem_type when the training script sets it; when missing
         # (or null), default to multi_label — the historical classivore behavior.
         self.problem_type = model_config.get("problem_type") or "multi_label_classification"
