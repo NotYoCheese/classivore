@@ -3,7 +3,7 @@
 ## Modules
 
 - `src/classivore/taxonomy/loader.py` — Load taxonomy from CSV/TSV/JSON. Normalize to internal format.
-- `src/classivore/taxonomy/validator.py` — Validate hierarchy integrity, check for orphans/cycles, verify required columns.
+- `src/classivore/taxonomy/onboarding.py` — `validate_csv` (hierarchy integrity, orphan/cycle detection, required-column checks), `generate_default_config`, and report helpers used by `classivore init`.
 - `src/classivore/taxonomy/enricher.py` — Generate descriptions for categories that lack them using LLM. Uses sibling/parent context for disambiguation.
 
 ## Internal Taxonomy Format
@@ -74,6 +74,5 @@ Cost: ~$0.50-2.00 per taxonomy using Haiku.
 
 ## Tests
 
-- `tests/unit/test_taxonomy_loader.py` — test loading from each format
-- `tests/unit/test_taxonomy_validator.py` — test hierarchy validation, error detection
-- `tests/unit/test_taxonomy_enricher.py` — test prompt generation, response parsing (mock LLM)
+- `tests/unit/test_taxonomy_loader.py` — loading from each format
+- `tests/unit/test_taxonomy_enricher.py` — prompt generation, response parsing, onboarding validation (mock LLM)

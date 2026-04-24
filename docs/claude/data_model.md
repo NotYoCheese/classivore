@@ -8,11 +8,11 @@ many times. This saves significant collection cost and time when adding new taxo
 ```
 data/
 ├── corpus/
-│   └── pages.json              # Shared scraped content (all taxonomies)
+│   └── pages.json              # Shared scraped content (all taxonomies, NDJSON)
 ├── labels/
-│   ├── iab-2.2.json            # IAB 2.2 labels (references corpus by URL)
-│   ├── iptc-media.json         # IPTC labels for same corpus pages
-│   └── google-product.json     # Etc.
+│   ├── iab-2.2/labels.json     # IAB 2.2 labels (NDJSON, references corpus by URL/content_hash)
+│   ├── iptc-media/labels.json  # IPTC labels for same corpus pages
+│   └── google-product/labels.json
 └── reviewed/
     ├── iab-2.2.json            # Human-reviewed IAB labels
     └── iptc-media.json         # Human-reviewed IPTC labels
@@ -37,19 +37,19 @@ data/
 
 ## Label Schema (per taxonomy)
 
+Labels are written as NDJSON (one record per line) to `data/labels/<taxonomy-slug>/labels.json`:
+
 ```json
 {
     "url": "https://example.com/article",
-    "categories": [
-        {"category": "Automotive: Green Vehicles", "category_id": "22", "confidence": 0.94}
-    ],
-    "reasoning": "This article discusses electric vehicle technology...",
-    "labeled_at": "2026-03-31T14:00:00Z",
-    "review_status": "unreviewed|accepted|edited|rejected"
+    "content_hash": "a1b2c3d4...",
+    "categories": ["Automotive: Green Vehicles", "Automotive: Auto Technology"]
 }
 ```
 
-Labels reference corpus pages by URL. The training step joins labels with corpus text.
+- Only stage-2-complete pages are emitted (see `docs/claude/labeling.md`).
+- `categories` is a flat list of category names — the join to `category_id`, confidence, and stage-level LLM reasoning is retained in the labeler's state file for debugging but is not part of the downstream training input.
+- Labels reference corpus pages by both `url` and `content_hash`. The training step joins labels with corpus text on `content_hash` (authoritative) with `url` as a human-readable key.
 
 ## Workflow for New Taxonomy
 

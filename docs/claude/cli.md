@@ -39,10 +39,10 @@ Every command accepts:
 In `pyproject.toml`:
 ```toml
 [project.scripts]
-classivore = "cli.main:main"
+classivore = "classivore.cli.main:main"
 ```
 
-Using subcommand dispatch in `cli/main.py`.
+Using subcommand dispatch in `src/classivore/cli/main.py`.
 
 ## Tests
 

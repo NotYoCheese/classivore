@@ -296,11 +296,13 @@ Look for:
 - **Unknown labels** — Category names in labels not found in taxonomy
 - **Low confidence** — Many labels below the confidence threshold
 
-## Step 7: Train (Coming Soon)
+## Step 7: Train
 
 ```bash
 classivore train --taxonomy my-taxonomy
 ```
+
+See `docs/claude/training.md` for the full training pipeline, artifacts produced, and how inference consumes them.
 
 ## Cost Summary
 

@@ -26,25 +26,26 @@ class_weight_cap: 7.0
 1. Load reviewed data, filter rejected pages
 2. Encode labels with MultiLabelBinarizer (n_samples × n_categories)
 3. Split 70/20/10 train/val/test
-4. Fine-tune DeBERTa with focal loss + class weights
+4. Fine-tune DeBERTa with focal loss + class weights. Training sets `problem_type="multi_label_classification"` in the saved `config.json`; `Classifier` reads this at load time to choose the output activation.
 5. Early stopping on validation F1
-6. Save model + tokenizer + label mappings
+6. Save model + tokenizer + artifacts (see below)
 
 ## Per-Category Thresholds
 
 After training, optimize sigmoid threshold independently for each category:
-- Default: 0.5 global threshold
+- Classifier applies a per-category threshold vector at inference time; the default floor is `0.5` for multi-label models and `0.0` for single-label models, and entries in `per_category_thresholds.json` override the default whenever present.
 - Optimized: per-category thresholds tuned on validation set
 - Typical improvement: +10-15% F1 Macro
 
 ## Model Artifacts
 
-Saved to `models/<taxonomy-slug>/`:
-- Model weights + tokenizer (HuggingFace format)
-- `label2id.json`, `id2label.json`
-- `per_category_thresholds.json`
-- `taxonomy_enriched.csv` (bundled for inference)
-- `training_metrics.json`
+Saved to `models/<taxonomy-slug>/<timestamp>/`:
+- HuggingFace model directory (weights, `config.json`, tokenizer files) via `Trainer.save_model` + `tokenizer.save_pretrained`
+- `label_mappings.json` — `index_to_name` + `index_to_id`
+- `taxonomy_metadata.json` — per-category `path`, `depth`, `is_leaf`, `parent_name` (required by `Classifier` and the publishing artifact contract)
+- `per_category_thresholds.json` — optimized per-category thresholds
+- `training_report.json` — hyperparameters + metrics + artifact inventory
+- `quality_report.json` — detailed per-category evaluation metrics
 
 ## Device Auto-Detection
 
