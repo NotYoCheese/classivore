@@ -240,3 +240,171 @@ class TestClassifierPredict:
         clf = self._build(tmp_path, "regression", logits)
         with pytest.raises(NotImplementedError, match="regression"):
             clf.predict("some text")
+
+
+# --- max_length derivation: clamp to tokenizer.model_max_length ---
+
+def _write_model_dir_with_config(tmp_path, config, num_classes=3):
+    """Write a model dir with an arbitrary config dict."""
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    mappings = {
+        "index_to_name": {str(i): f"cat{i}" for i in range(num_classes)},
+        "index_to_id": {str(i): str(i + 100) for i in range(num_classes)},
+    }
+    (tmp_path / "label_mappings.json").write_text(json.dumps(mappings))
+    return tmp_path
+
+
+def _build_classifier_with_tokenizer_max(tmp_path, config_max, tokenizer_max,
+                                          model_type=None, pad_token_id=None):
+    """Init a Classifier with the given config max_position_embeddings and
+    tokenizer.model_max_length values. Optional model_type / pad_token_id
+    exercise the RoBERTa-family offset path."""
+    config = {"max_position_embeddings": config_max}
+    if model_type is not None:
+        config["model_type"] = model_type
+    if pad_token_id is not None:
+        config["pad_token_id"] = pad_token_id
+    _write_model_dir_with_config(tmp_path, config)
+
+    tokenizer = MagicMock()
+    tokenizer.model_max_length = tokenizer_max
+
+    with patch(
+        "classivore.inference.classifier.AutoModelForSequenceClassification.from_pretrained",
+        return_value=MagicMock(),
+    ), patch(
+        "classivore.inference.classifier.AutoTokenizer.from_pretrained",
+        return_value=tokenizer,
+    ), patch(
+        "classivore.inference.classifier._select_device",
+        return_value=("cpu", False),
+    ):
+        return Classifier(tmp_path)
+
+
+class TestMaxLengthDerivation:
+    def test_roberta_family_subtracts_position_offset(self, tmp_path):
+        """RoBERTa with config max=514 and pad_token_id=1 → usable 512.
+        Tokenizer's sentinel value must not mask the offset."""
+        clf = _build_classifier_with_tokenizer_max(
+            tmp_path, config_max=514, tokenizer_max=int(1e30),
+            model_type="roberta", pad_token_id=1,
+        )
+        assert clf.max_length == 512
+
+    def test_xlm_roberta_also_subtracts_offset(self, tmp_path):
+        """XLM-RoBERTa shares RoBERTa's position-offset behavior."""
+        clf = _build_classifier_with_tokenizer_max(
+            tmp_path, config_max=514, tokenizer_max=int(1e30),
+            model_type="xlm-roberta", pad_token_id=1,
+        )
+        assert clf.max_length == 512
+
+    def test_bert_does_not_subtract_offset(self, tmp_path):
+        """BERT does NOT have the RoBERTa offset — full 512 is usable."""
+        clf = _build_classifier_with_tokenizer_max(
+            tmp_path, config_max=512, tokenizer_max=int(1e30),
+            model_type="bert", pad_token_id=0,
+        )
+        assert clf.max_length == 512
+
+    def test_clamps_to_tokenizer_max_when_smaller(self, tmp_path):
+        """If the tokenizer reports a real (non-sentinel) max smaller than
+        config, prefer the tokenizer."""
+        clf = _build_classifier_with_tokenizer_max(tmp_path, config_max=514, tokenizer_max=512)
+        assert clf.max_length == 512
+
+    def test_uses_config_when_tokenizer_max_smaller_is_not_a_thing(self, tmp_path):
+        """BERT/DeBERTa-style: both equal → use that value."""
+        clf = _build_classifier_with_tokenizer_max(tmp_path, config_max=512, tokenizer_max=512)
+        assert clf.max_length == 512
+
+    def test_uses_config_when_tokenizer_max_is_sentinel(self, tmp_path):
+        """Tokenizers leave model_max_length as ~1e30 when unset; fall back to config."""
+        clf = _build_classifier_with_tokenizer_max(
+            tmp_path, config_max=512, tokenizer_max=int(1e30),
+        )
+        assert clf.max_length == 512
+
+    def test_uses_config_when_tokenizer_has_no_attribute(self, tmp_path):
+        """Bare MagicMock tokenizer (no model_max_length) → use config."""
+        # Existing tests rely on this fallback path — guard against regression.
+        _write_model_dir_with_config(tmp_path, {"max_position_embeddings": 512})
+        with patch(
+            "classivore.inference.classifier.AutoModelForSequenceClassification.from_pretrained",
+            return_value=MagicMock(),
+        ), patch(
+            "classivore.inference.classifier.AutoTokenizer.from_pretrained",
+            return_value=MagicMock(),  # has MagicMock .model_max_length, not int
+        ), patch(
+            "classivore.inference.classifier._select_device",
+            return_value=("cpu", False),
+        ):
+            clf = Classifier(tmp_path)
+        assert clf.max_length == 512
+
+
+# --- End-to-end: long input on RoBERTa-style model never overflows ---
+
+class TestLongInputDoesNotOverflow:
+    def test_long_input_chunks_stay_within_tokenizer_max(self, tmp_path):
+        """Repro for the RoBERTa IndexError: a config of max_position_embeddings=514
+        with model_type=roberta must yield an effective input cap of 512, and
+        long inputs must never push the tokenizer past that cap."""
+        _write_model_dir_with_config(
+            tmp_path,
+            {"max_position_embeddings": 514, "model_type": "roberta", "pad_token_id": 1},
+            num_classes=3,
+        )
+
+        # Track every max_length the tokenizer is asked to enforce.
+        observed_max_lengths = []
+
+        def tok_call(*args, **kwargs):
+            if kwargs.get("add_special_tokens") is False:
+                # Simulate ~2000 tokens for the long input — forces chunking.
+                return {"input_ids": list(range(2000))}
+            observed_max_lengths.append(kwargs.get("max_length"))
+            encoding = MagicMock()
+            encoding.to = MagicMock(return_value={})
+            return encoding
+
+        tokenizer = MagicMock(side_effect=tok_call)
+        tokenizer.model_max_length = int(1e30)  # HuggingFace RoBERTa sentinel
+        tokenizer.decode = MagicMock(return_value="word " * 100)
+
+        # Mock model: returns a (batch, 3) logits tensor regardless of input.
+        # Don't actually exercise position embeddings — we're verifying the
+        # tokenizer call shape, which is what would otherwise overflow them.
+        def model_call(**kwargs):
+            output = MagicMock()
+            # Need at least one chunk × 3 classes to satisfy reshape downstream.
+            output.logits = torch.tensor([[0.1, 0.2, 0.3]])
+            return output
+
+        model = MagicMock(side_effect=model_call)
+        model.to = MagicMock(return_value=model)
+        model.eval = MagicMock(return_value=model)
+
+        with patch(
+            "classivore.inference.classifier.AutoModelForSequenceClassification.from_pretrained",
+            return_value=model,
+        ), patch(
+            "classivore.inference.classifier.AutoTokenizer.from_pretrained",
+            return_value=tokenizer,
+        ), patch(
+            "classivore.inference.classifier._select_device",
+            return_value=("cpu", False),
+        ):
+            clf = Classifier(tmp_path)
+
+        # Sanity: the fix kicked in.
+        assert clf.max_length == 512
+
+        # The actual repro: predict on long text must not raise, and every
+        # tokenizer call inside _run_inference must cap at the safe length.
+        result = clf.predict("word " * 2000)
+        assert result is not None
+        assert len(observed_max_lengths) > 0
+        assert all(m == 512 for m in observed_max_lengths), observed_max_lengths
