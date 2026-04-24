@@ -35,13 +35,20 @@ Required for inference:
 ## Prediction Pipeline
 
 1. Tokenize input text
-2. If tokens exceed `max_position_embeddings` (512): sliding window chunking with 128-token overlap
-3. Batched forward pass through DeBERTa
-4. Sigmoid activation on logits
+2. If tokens exceed the model's usable input length: sliding window chunking with 128-token overlap
+3. Batched forward pass through the model
+4. Activation dispatched from `config.json`'s `problem_type`:
+   - `multi_label_classification` → sigmoid (independent per-class probs). Default when field is missing.
+   - `single_label_classification` → softmax (probs sum to 1 per row)
+   - `regression` → raises `NotImplementedError`
 5. If chunked: aggregate probabilities across chunks (max or mean)
-6. Apply per-category thresholds (vectorized)
+6. Apply per-category thresholds (vectorized). Default floor is `0.5` for multi-label and `0.0` for single-label; `per_category_thresholds.json` always overrides when present.
 7. Build result dicts with name, id, path, confidence
 8. Sort by confidence descending
+
+### Usable input length
+
+`max_length` is derived from `config.max_position_embeddings`, clamped against `tokenizer.model_max_length` when it carries a real value. RoBERTa-family models (`roberta`, `xlm-roberta`, `camembert`, `longformer`, `xmod`) offset `position_ids` by `pad_token_id + 1`, so a config of `514` only permits `512` input tokens — `Classifier` detects this from `config.model_type` and subtracts the offset. BERT, DeBERTa, and other non-RoBERTa-family models use the full configured length.
 
 ## Device Selection
 

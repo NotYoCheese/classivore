@@ -12,6 +12,7 @@ The publishing module pushes trained models to HuggingFace Hub as private repos 
 - `label_mappings.json` — category name/ID/index mappings
 - `per_category_thresholds.json` — optimized classification thresholds
 - `training_report.json` — training metadata, metrics, hyperparameters
+- `taxonomy_metadata.json` — per-category `path`, `depth`, `is_leaf`, `parent_name` (consumed by `Classifier` to attach hierarchy paths to predictions)
 
 ### Optional (warn if missing)
 - `tokenizer_config.json`, `tokenizer.json`, `special_tokens_map.json`, `added_tokens.json`, `spm.model` — tokenizer files

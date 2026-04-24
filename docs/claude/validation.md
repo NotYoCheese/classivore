@@ -24,7 +24,7 @@ Install with: `uv pip install label-lens` or `uv pip install classivore[validate
 
 ## Data Flow
 
-1. `loader.py` joins `data/corpus/pages.json` with `data/labels/<taxonomy>.json`
+1. `loader.py` joins `data/corpus/pages.json` with `data/labels/<taxonomy-slug>/labels.json` (preferred) or the legacy `data/labels/<taxonomy-slug>.json` path
 2. Multi-label entries are exploded into one row per (text, label) pair
 3. label-lens runs distribution, duplicate, and noise analyses on the flat DataFrame
 4. Taxonomy-aware checks compare labels against known categories from `taxonomies/<slug>/`

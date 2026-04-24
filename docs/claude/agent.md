@@ -41,7 +41,7 @@ Configured via AgentConfig:
 
 - Iteration 0: template queries (free, from enriched taxonomy descriptions)
 - Iteration 1+: hybrid (template first, LLM queries on retry)
-- Collection module handles provider fallback (Brave → Serper) and circuit breaker
+- Collection module handles provider fallback (Brave → Serper → Exa) and circuit breaker
 
 ## CLI
 
