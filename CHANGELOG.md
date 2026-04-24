@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-04-24
+
+### Inference
+
+- Fix `IndexError: index out of range in self` when classifying long input
+  with RoBERTa-family models (RoBERTa, XLM-RoBERTa, CamemBERT, Longformer,
+  XMOD). These models offset `position_ids` by `pad_token_id + 1`, so a
+  config of `max_position_embeddings=514` only addresses 512 input tokens.
+  `Classifier` now detects the offset from `config.model_type` and clamps
+  `max_length` accordingly. BERT, DeBERTa, and other non-RoBERTa-family
+  models are unaffected.
+
 ## [1.2.1] - 2026-04-21
 
 ### Inference
