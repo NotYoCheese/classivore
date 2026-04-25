@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 from classivore.batch import (
+    aggregate_batch_usage,
     get_api_client,
     iter_succeeded_results,
     poll_until_complete,
@@ -32,6 +33,49 @@ from classivore.persistence import iter_ndjson, load_ndjson
 logger = get_logger(__name__)
 
 BATCH_CHUNK_SIZE = 10000
+
+# 1-hour TTL keeps the system prompt cached across slow-processing batches.
+# Batches routinely take >5 minutes, so the default 5m TTL would expire
+# mid-run and most requests would miss cache.
+_CACHE_CONTROL_1H = {"type": "ephemeral", "ttl": "1h"}
+
+
+def _cacheable_system(system_prompt):
+    """Wrap a system prompt string in a cache-controlled content block."""
+    return [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL_1H}]
+
+
+def _empty_usage_totals():
+    return {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "estimated_cost_usd": 0.0,
+    }
+
+
+def _accumulate_usage(totals, stats):
+    for key in (
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_cache_creation_tokens",
+        "total_cache_read_tokens",
+        "estimated_cost_usd",
+    ):
+        totals[key] += stats.get(key, 0)
+
+
+def _finalize_usage(totals):
+    total_input = (
+        totals["total_input_tokens"]
+        + totals["total_cache_creation_tokens"]
+        + totals["total_cache_read_tokens"]
+    )
+    totals["cache_hit_rate"] = (
+        totals["total_cache_read_tokens"] / total_input if total_input > 0 else 0.0
+    )
+    return totals
 
 
 def run_labeling(config, categories, hierarchy, data_dir, stage="all",
@@ -100,16 +144,19 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
     # Get API client
     client = get_api_client()
 
+    stage1_usage = None
+    stage2_usage = None
+
     # Stage 1
     if stage in ("all", "1"):
-        _run_stage1(
+        stage1_usage = _run_stage1(
             client, label_state, page_lookup, tier1_categories,
             config, labels_dir, poll_interval,
         )
 
     # Stage 2
     if stage in ("all", "2"):
-        _run_stage2(
+        stage2_usage = _run_stage2(
             client, label_state, page_lookup, content_categories,
             config, labels_dir, poll_interval,
         )
@@ -117,19 +164,28 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
     # Write output
     _write_labels(label_state, labels_dir)
 
-    return label_state.summary()
+    _print_usage_summary(stage1_usage, stage2_usage)
+
+    summary = label_state.summary()
+    if stage1_usage:
+        summary["stage1_usage"] = stage1_usage
+    if stage2_usage:
+        summary["stage2_usage"] = stage2_usage
+    return summary
 
 
 def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir, poll_interval):
-    """Run stage 1: tier-1 triage."""
+    """Run stage 1: tier-1 triage. Returns aggregated usage stats dict."""
+    usage_totals = _empty_usage_totals()
     needing = state.pages_needing_stage1()
     if not needing:
         logger.info("stage1_all_triaged")
-        return
+        return _finalize_usage(usage_totals)
 
     logger.info("stage1_triaging", page_count=len(needing), tier1_count=len(tier1_categories))
 
     system_prompt = build_stage1_system(tier1_categories)
+    system_blocks = _cacheable_system(system_prompt)
     valid_tier1_names = {c["name"] for c in tier1_categories}
 
     # Build batch requests
@@ -149,7 +205,7 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
                 "model": config.labeling_model,
                 "max_tokens": config.stage1_max_tokens,
                 "temperature": config.labeling_temperature,
-                "system": system_prompt,
+                "system": system_blocks,
                 "messages": [{"role": "user", "content": user_msg}],
             },
         })
@@ -193,13 +249,20 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
 
         state.save()
 
+        chunk_usage = aggregate_batch_usage(client, batch_id)
+        _accumulate_usage(usage_totals, chunk_usage)
+        logger.info("stage1_cache_stats", batch_id=batch_id, **chunk_usage)
+
+    return _finalize_usage(usage_totals)
+
 
 def _run_stage2(client, state, page_lookup, content_categories, config, labels_dir, poll_interval):
-    """Run stage 2: subtree classification."""
+    """Run stage 2: subtree classification. Returns aggregated usage stats dict."""
+    usage_totals = _empty_usage_totals()
     needing = state.pages_needing_stage2()
     if not needing:
         logger.info("stage2_all_classified")
-        return
+        return _finalize_usage(usage_totals)
 
     logger.info("stage2_classifying", page_count=len(needing))
 
@@ -227,6 +290,7 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
             max_labels=config.max_labels,
             min_confidence=config.min_confidence,
         )
+        system_blocks = _cacheable_system(system_prompt)
 
         for content_hash in hashes:
             page = page_lookup.get(content_hash)
@@ -243,7 +307,7 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
                     "model": config.labeling_model,
                     "max_tokens": config.stage2_max_tokens,
                     "temperature": config.labeling_temperature,
-                    "system": system_prompt,
+                    "system": system_blocks,
                     "messages": [{"role": "user", "content": user_msg}],
                 },
             })
@@ -283,6 +347,12 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
                     )
 
         state.save()
+
+        chunk_usage = aggregate_batch_usage(client, batch_id)
+        _accumulate_usage(usage_totals, chunk_usage)
+        logger.info("stage2_cache_stats", batch_id=batch_id, **chunk_usage)
+
+    return _finalize_usage(usage_totals)
 
 
 def _seed_from_existing_labels(state, labels_dir):
@@ -334,6 +404,29 @@ def _save_raw_line(raw_file, custom_id, message):
         raw_file.write(json.dumps({"custom_id": custom_id, "text": text}) + "\n")
     except Exception as e:
         logger.warning("raw_result_save_failed", custom_id=custom_id, error=str(e))
+
+
+def _print_usage_summary(stage1_usage, stage2_usage):
+    """Print a human-readable cache and cost summary to stdout."""
+    stages = [("Stage 1", stage1_usage), ("Stage 2", stage2_usage)]
+    stages = [(name, u) for name, u in stages if u is not None]
+    if not stages:
+        return
+
+    print("\nLabeling usage (prompt cache enabled, 1h TTL):")
+    total_cost = 0.0
+    for name, u in stages:
+        total_cost += u["estimated_cost_usd"]
+        print(
+            f"  {name}: "
+            f"input={u['total_input_tokens']:,}  "
+            f"output={u['total_output_tokens']:,}  "
+            f"cache_write={u['total_cache_creation_tokens']:,}  "
+            f"cache_read={u['total_cache_read_tokens']:,}  "
+            f"hit_rate={u['cache_hit_rate']*100:.1f}%  "
+            f"cost=${u['estimated_cost_usd']:.4f}"
+        )
+    print(f"  Total estimated cost: ${total_cost:.4f}")
 
 
 def _write_labels(state, labels_dir):
