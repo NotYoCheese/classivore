@@ -88,6 +88,21 @@ class TestDryRun:
         assert "2 (across 1 tier-1)" in captured.out or "Content categories: 2" in captured.out
 
 
+@pytest.fixture(autouse=True)
+def mock_aggregate_batch_usage():
+    """Stub aggregate_batch_usage so tests don't touch the real client."""
+    with patch("classivore.labeling.aggregate_batch_usage") as m:
+        m.return_value = {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_cache_creation_tokens": 0,
+            "total_cache_read_tokens": 0,
+            "cache_hit_rate": 0.0,
+            "estimated_cost_usd": 0.0,
+        }
+        yield m
+
+
 class TestStage1:
     @patch("classivore.labeling.iter_succeeded_results")
     @patch("classivore.labeling.poll_until_complete")
@@ -310,3 +325,154 @@ class TestOutput:
             data_dir=tmp_path,
         )
         assert summary["total_pages"] == 0
+
+
+class TestPromptCaching:
+    """System prompts must be wrapped in cache_control content blocks so that
+    Haiku can serve identical prompts from cache across batch requests."""
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_stage1_system_has_cache_control(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        _write_corpus(tmp_path, _make_pages(2))
+        mock_client.return_value = MagicMock()
+        mock_submit.return_value = "batch_s1"
+
+        msg = MagicMock()
+        block = MagicMock()
+        block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        msg.content = [block]
+        mock_iter.return_value = [("s1-hash0", msg), ("s1-hash1", msg)]
+
+        run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="1",
+        )
+
+        submitted_requests = mock_submit.call_args.args[1]
+        assert len(submitted_requests) == 2
+
+        for req in submitted_requests:
+            system = req["params"]["system"]
+            assert isinstance(system, list), "system must be a content-block list"
+            assert len(system) == 1
+            block = system[0]
+            assert block["type"] == "text"
+            assert isinstance(block["text"], str) and block["text"]
+            assert block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_stage2_system_has_cache_control(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        _write_corpus(tmp_path, _make_pages(1))
+        mock_client.return_value = MagicMock()
+
+        s1_msg = MagicMock()
+        s1_block = MagicMock()
+        s1_block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        s1_msg.content = [s1_block]
+
+        s2_msg = MagicMock()
+        s2_block = MagicMock()
+        s2_block.text = json.dumps({"reasoning": "r", "categories": [{"name": "Sedan", "confidence": 0.95}]})
+        s2_msg.content = [s2_block]
+
+        mock_submit.side_effect = ["batch_s1", "batch_s2"]
+        mock_iter.side_effect = [[("s1-hash0", s1_msg)], [("s2-hash0", s2_msg)]]
+
+        run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="all",
+        )
+
+        # Second submit call is stage 2
+        stage2_requests = mock_submit.call_args_list[1].args[1]
+        assert len(stage2_requests) == 1
+        system = stage2_requests[0]["params"]["system"]
+        assert isinstance(system, list)
+        assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_stage1_system_identical_across_requests(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        """Identical cache key is the whole point — every stage-1 request
+        must share the same system block verbatim."""
+        _write_corpus(tmp_path, _make_pages(3))
+        mock_client.return_value = MagicMock()
+        mock_submit.return_value = "batch_s1"
+
+        msg = MagicMock()
+        block = MagicMock()
+        block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        msg.content = [block]
+        mock_iter.return_value = [("s1-hash0", msg), ("s1-hash1", msg), ("s1-hash2", msg)]
+
+        run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="1",
+        )
+
+        submitted = mock_submit.call_args.args[1]
+        systems = [req["params"]["system"] for req in submitted]
+        assert all(s == systems[0] for s in systems)
+
+
+class TestCacheStatsLogging:
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_aggregates_usage_per_stage(
+        self, mock_client, mock_submit, mock_poll, mock_iter,
+        mock_aggregate_batch_usage, tmp_path,
+    ):
+        _write_corpus(tmp_path, _make_pages(1))
+        mock_client.return_value = MagicMock()
+
+        s1_msg = MagicMock()
+        s1_block = MagicMock()
+        s1_block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        s1_msg.content = [s1_block]
+
+        s2_msg = MagicMock()
+        s2_block = MagicMock()
+        s2_block.text = json.dumps({"reasoning": "r", "categories": [{"name": "Sedan", "confidence": 0.95}]})
+        s2_msg.content = [s2_block]
+
+        mock_submit.side_effect = ["batch_s1", "batch_s2"]
+        mock_iter.side_effect = [[("s1-hash0", s1_msg)], [("s2-hash0", s2_msg)]]
+
+        run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="all",
+        )
+
+        # Called once per stage (one chunk each)
+        assert mock_aggregate_batch_usage.call_count == 2
+        called_batch_ids = [c.args[1] for c in mock_aggregate_batch_usage.call_args_list]
+        assert "batch_s1" in called_batch_ids
+        assert "batch_s2" in called_batch_ids
