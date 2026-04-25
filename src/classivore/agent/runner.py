@@ -68,12 +68,17 @@ def run_agent(
         target_per_category=target,
     )
 
+    # Aggregated metrics across iterations (for run recorder).
+    aggregated_metrics: dict = {}
+
     # Initial coverage analysis
     report = analyze_coverage(
         categories, labels_dir, target,
         excluded_categories=excluded_cats,
         excluded_tier1=excluded_tier1,
     )
+    initial_satisfied = report.satisfied_categories
+    initial_total = report.total_categories
 
     logger.info(
         "coverage_analysis",
@@ -135,12 +140,16 @@ def run_agent(
         collection_summary = _run_collection(
             config, categories, data_dir, plan, category_targets, verbose,
         )
+        if "metrics" in collection_summary:
+            _merge_metrics(aggregated_metrics, collection_summary["metrics"])
 
         # 4. Label everything new
         labeling_summary = _run_labeling(
             config, categories, hierarchy, data_dir,
             poll_interval, verbose,
         )
+        if "labeling_metrics" in labeling_summary:
+            _merge_metrics(aggregated_metrics, {"labeling": labeling_summary["labeling_metrics"]})
 
         # 5. How did we do?
         post_report = analyze_coverage(
@@ -173,8 +182,37 @@ def run_agent(
         report = post_report
 
     summary = agent_state.summary()
-    logger.info("agent_complete", **summary)
+
+    # Final coverage snapshot for the run report
+    final_report = analyze_coverage(
+        categories, labels_dir, target,
+        excluded_categories=excluded_cats,
+        excluded_tier1=excluded_tier1,
+    )
+    aggregated_metrics["coverage"] = {
+        "at_target_before": initial_satisfied,
+        "at_target_after": final_report.satisfied_categories,
+        "total_categories": final_report.total_categories,
+        "thin_remaining": len(final_report.gaps),
+    }
+    summary["metrics"] = aggregated_metrics
+
+    logger.info("agent_complete", iterations=summary.get("iterations_completed"))
     return summary
+
+
+def _merge_metrics(target, source):
+    """Recursively sum numeric leaves from source into target."""
+    for key, value in source.items():
+        if isinstance(value, dict):
+            sub = target.setdefault(key, {})
+            if not isinstance(sub, dict):
+                continue
+            _merge_metrics(sub, value)
+        elif isinstance(value, bool):
+            continue
+        elif isinstance(value, (int, float)):
+            target[key] = target.get(key, 0) + value
 
 
 

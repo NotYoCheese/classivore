@@ -476,3 +476,162 @@ class TestCacheStatsLogging:
         called_batch_ids = [c.args[1] for c in mock_aggregate_batch_usage.call_args_list]
         assert "batch_s1" in called_batch_ids
         assert "batch_s2" in called_batch_ids
+
+
+class TestFunnelCounters:
+    """run_labeling returns labeling_metrics with funnel + cache for the run recorder."""
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_counts_stage1_sent_and_tier1_hits(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        _write_corpus(tmp_path, _make_pages(3))
+        mock_client.return_value = MagicMock()
+        mock_submit.return_value = "batch_s1"
+
+        # 2 pages match Automotive (tier1_hit), 1 page matches a hallucinated tier1 (filtered out → no tier1_hit)
+        match_msg = MagicMock()
+        match_block = MagicMock()
+        match_block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        match_msg.content = [match_block]
+
+        miss_msg = MagicMock()
+        miss_block = MagicMock()
+        miss_block.text = json.dumps({"categories": [{"name": "Bogus", "confidence": 0.9}]})
+        miss_msg.content = [miss_block]
+
+        mock_iter.return_value = [
+            ("s1-hash0", match_msg),
+            ("s1-hash1", match_msg),
+            ("s1-hash2", miss_msg),
+        ]
+
+        summary = run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="1",
+        )
+
+        metrics = summary["labeling_metrics"]
+        assert metrics["stage1_sent"] == 3
+        assert metrics["tier1_hits"] == 2
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_counts_stage2_labels_emitted(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        _write_corpus(tmp_path, _make_pages(1))
+        mock_client.return_value = MagicMock()
+
+        s1_msg = MagicMock()
+        s1_block = MagicMock()
+        s1_block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        s1_msg.content = [s1_block]
+
+        s2_msg = MagicMock()
+        s2_block = MagicMock()
+        s2_block.text = json.dumps({
+            "reasoning": "r",
+            "categories": [{"name": "Sedan", "confidence": 0.95}],
+        })
+        s2_msg.content = [s2_block]
+
+        mock_submit.side_effect = ["batch_s1", "batch_s2"]
+        mock_iter.side_effect = [[("s1-hash0", s1_msg)], [("s2-hash0", s2_msg)]]
+
+        summary = run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="all",
+        )
+
+        metrics = summary["labeling_metrics"]
+        assert metrics["stage2_sent"] == 1
+        assert metrics["labels_emitted"] == 1
+        assert metrics["errors"] == 0
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_counts_stage2_errors(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        _write_corpus(tmp_path, _make_pages(1))
+        mock_client.return_value = MagicMock()
+
+        s1_msg = MagicMock()
+        s1_block = MagicMock()
+        s1_block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        s1_msg.content = [s1_block]
+
+        # Malformed stage 2 response triggers parser error
+        s2_msg = MagicMock()
+        s2_block = MagicMock()
+        s2_block.text = "not valid json at all"
+        s2_msg.content = [s2_block]
+
+        mock_submit.side_effect = ["batch_s1", "batch_s2"]
+        mock_iter.side_effect = [[("s1-hash0", s1_msg)], [("s2-hash0", s2_msg)]]
+
+        summary = run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="all",
+        )
+
+        metrics = summary["labeling_metrics"]
+        assert metrics["errors"] == 1
+        assert metrics["labels_emitted"] == 0
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_metrics_include_cache_per_stage(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        _write_corpus(tmp_path, _make_pages(1))
+        mock_client.return_value = MagicMock()
+
+        s1_msg = MagicMock()
+        s1_block = MagicMock()
+        s1_block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        s1_msg.content = [s1_block]
+
+        s2_msg = MagicMock()
+        s2_block = MagicMock()
+        s2_block.text = json.dumps({
+            "reasoning": "r",
+            "categories": [{"name": "Sedan", "confidence": 0.95}],
+        })
+        s2_msg.content = [s2_block]
+
+        mock_submit.side_effect = ["batch_s1", "batch_s2"]
+        mock_iter.side_effect = [[("s1-hash0", s1_msg)], [("s2-hash0", s2_msg)]]
+
+        summary = run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="all",
+        )
+
+        cache = summary["labeling_metrics"]["cache"]
+        assert "stage1" in cache
+        assert "stage2" in cache
+        assert "cache_hit_rate" in cache["stage1"]
+        assert "estimated_cost_usd" in cache["stage1"]

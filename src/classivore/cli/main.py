@@ -96,6 +96,7 @@ def _register_collect(subparsers):
     p.add_argument("--queries-only", action="store_true", help="Generate queries without fetching content")
     p.add_argument("--audit-domains", action="store_true", help="Show domain quality report and exit")
     p.add_argument("--status", action="store_true", help="Show collection status dashboard and exit")
+    p.add_argument("--json", action="store_true", help="Print run record as JSON instead of summary")
     p.set_defaults(func=_cmd_collect)
 
 
@@ -115,6 +116,7 @@ def _register_label(subparsers):
     p.add_argument("--stage", choices=["1", "2", "all"], default="all", help="Run specific stage (default: all)")
     p.add_argument("--poll-interval", type=int, default=30, help="Batch poll interval in seconds")
     p.add_argument("--status", action="store_true", help="Show labeling progress and exit")
+    p.add_argument("--json", action="store_true", help="Print run record as JSON instead of summary")
     p.set_defaults(func=_cmd_label)
 
 
@@ -155,6 +157,8 @@ def _register_agent(subparsers):
                    help="Batch poll interval in seconds")
     p.add_argument("--status", action="store_true",
                    help="Show agent run history and current coverage")
+    p.add_argument("--json", action="store_true",
+                   help="Print run record as JSON instead of summary")
     p.set_defaults(func=_cmd_agent)
 
 
@@ -216,6 +220,51 @@ def _register_taxonomy(subparsers):
     p = subparsers.add_parser("taxonomy", help="Show taxonomy info")
     _add_common_args(p)
     p.set_defaults(func=_cmd_taxonomy)
+
+
+def _record_run(command, taxonomy, cli_args, data_dir, emit_json, run):
+    """Wrap a command body in a RunRecorder + report block.
+
+    Args:
+        command: Command name (e.g. "collect").
+        taxonomy: Taxonomy slug.
+        cli_args: Dict of parsed CLI args (typically vars(args)).
+        data_dir: Path to the data directory; runs.jsonl lives under it.
+        emit_json: If True, print the run record as JSON instead of the report.
+        run: Callable taking the RunRecorder; returns the underlying summary
+            (which is also returned by _record_run itself).
+
+    Returns:
+        Whatever `run` returned (typically the command's summary dict).
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from classivore.runs import (
+        RunRecorder,
+        default_runs_path,
+        format_summary,
+        load_runs,
+        sum_metrics,
+    )
+
+    runs_path = default_runs_path(_Path(data_dir))
+    safe_args = {k: v for k, v in cli_args.items() if k != "func"}
+
+    summary = None
+    with RunRecorder(command=command, taxonomy=taxonomy, args=safe_args, runs_path=runs_path) as recorder:
+        summary = run(recorder)
+
+    record = recorder.record
+    all_runs = load_runs(runs_path, command=command, taxonomy=taxonomy)
+    all_time = sum_metrics(all_runs)
+
+    if emit_json:
+        print(_json.dumps({"record": record, "all_time": all_time}, indent=2))
+    else:
+        print(format_summary(record, all_time))
+
+    return summary
 
 
 # Stub command handlers — each will be implemented in its own module
@@ -325,6 +374,7 @@ def _cmd_collect(args):
     from classivore.collection.domains import DomainTracker
     from classivore.collection.state import CollectionState
     from classivore.config.settings import get_data_dir, load_taxonomy_config
+    from classivore.taxonomy.loader import load_taxonomy
 
     config = load_taxonomy_config(args.taxonomy)
     data_dir = get_data_dir(args.data_dir)
@@ -363,6 +413,26 @@ def _cmd_collect(args):
 
     resume = args.resume and not args.no_resume
 
+    summary = _record_run(
+        command="collect",
+        taxonomy=args.taxonomy,
+        cli_args=vars(args),
+        data_dir=data_dir,
+        emit_json=getattr(args, "json", False),
+        run=lambda recorder: _do_collect(
+            recorder, config, categories, data_dir, resume, args,
+        ),
+    )
+
+    if not getattr(args, "json", False):
+        print(f"\nCollection complete:")
+        print(f"  Categories: {summary['satisfied_categories']}/{summary['total_categories']} satisfied")
+        print(f"  Pages: {summary['total_collected']}/{summary['total_target']}")
+
+
+def _do_collect(recorder, config, categories, data_dir, resume, args):
+    from classivore.collection import run_collection
+
     summary = run_collection(
         config=config,
         categories=categories,
@@ -371,10 +441,9 @@ def _cmd_collect(args):
         queries_only=args.queries_only,
         verbose=args.verbose,
     )
-
-    print(f"\nCollection complete:")
-    print(f"  Categories: {summary['satisfied_categories']}/{summary['total_categories']} satisfied")
-    print(f"  Pages: {summary['total_collected']}/{summary['total_target']}")
+    if "metrics" in summary:
+        recorder.metrics.update(summary["metrics"])
+    return summary
 
 
 def _cmd_validate(args):
@@ -420,7 +489,6 @@ def _cmd_validate(args):
 
 def _cmd_label(args):
     from classivore.config.settings import get_data_dir, load_taxonomy_config
-    from classivore.labeling import run_labeling
     from classivore.labeling.state import LabelState
     from classivore.taxonomy.loader import build_hierarchy, load_taxonomy
 
@@ -445,23 +513,51 @@ def _cmd_label(args):
     print(f"Taxonomy: {config.name} ({len(categories)} categories)")
     print(f"Data dir: {data_dir}")
 
+    if args.dry_run:
+        from classivore.labeling import run_labeling
+        run_labeling(
+            config=config, categories=categories, hierarchy=hierarchy,
+            data_dir=data_dir, stage=args.stage, dry_run=True,
+            poll_interval=args.poll_interval, verbose=args.verbose,
+        )
+        return
+
+    summary = _record_run(
+        command="label",
+        taxonomy=args.taxonomy,
+        cli_args=vars(args),
+        data_dir=data_dir,
+        emit_json=getattr(args, "json", False),
+        run=lambda recorder: _do_label(
+            recorder, config, categories, hierarchy, data_dir, args,
+        ),
+    )
+
+    if not getattr(args, "json", False):
+        triaged = summary["stage1_complete"] + summary["stage2_complete"]
+        print(f"\nLabeling complete:")
+        print(f"  Triaged:  {triaged} pages")
+        print(f"  Labeled:  {summary['stage2_complete']} pages")
+        print(f"  Pending:  {summary['unlabeled']} pages")
+        print(f"  Errors:   {summary['error']}")
+
+
+def _do_label(recorder, config, categories, hierarchy, data_dir, args):
+    from classivore.labeling import run_labeling
+
     summary = run_labeling(
         config=config,
         categories=categories,
         hierarchy=hierarchy,
         data_dir=data_dir,
         stage=args.stage,
-        dry_run=args.dry_run,
+        dry_run=False,
         poll_interval=args.poll_interval,
         verbose=args.verbose,
     )
-
-    triaged = summary["stage1_complete"] + summary["stage2_complete"]
-    print(f"\nLabeling complete:")
-    print(f"  Triaged:  {triaged} pages")
-    print(f"  Labeled:  {summary['stage2_complete']} pages")
-    print(f"  Pending:  {summary['unlabeled']} pages")
-    print(f"  Errors:   {summary['error']}")
+    if "labeling_metrics" in summary:
+        recorder.metrics["labeling"] = summary["labeling_metrics"]
+    return summary
 
 
 def _cmd_train(args):
@@ -611,7 +707,6 @@ def _print_classify_results(results):
 
 def _cmd_agent(args):
     from classivore.agent.coverage import analyze_coverage
-    from classivore.agent.runner import run_agent
     from classivore.agent.state import AgentState
     from classivore.config.settings import get_data_dir, load_taxonomy_config
     from classivore.taxonomy.loader import build_hierarchy, load_taxonomy
@@ -668,6 +763,37 @@ def _cmd_agent(args):
     print(f"Taxonomy: {config.name} ({len(categories)} categories)")
     print(f"Data dir: {data_dir}")
 
+    if args.dry_run:
+        from classivore.agent.runner import run_agent
+        run_agent(
+            config=config, categories=categories, hierarchy=hierarchy,
+            data_dir=data_dir, max_iterations=args.max_iterations,
+            target_per_category=args.target, dry_run=True,
+            poll_interval=args.poll_interval, verbose=args.verbose,
+        )
+        return
+
+    summary = _record_run(
+        command="agent",
+        taxonomy=args.taxonomy,
+        cli_args=vars(args),
+        data_dir=data_dir,
+        emit_json=getattr(args, "json", False),
+        run=lambda recorder: _do_agent(
+            recorder, config, categories, hierarchy, data_dir, args,
+        ),
+    )
+
+    if not getattr(args, "json", False):
+        print(f"\nAgent complete:")
+        print(f"  Iterations: {summary.get('iterations_completed', 0)}")
+        print(f"  Collected:  {summary.get('total_pages_collected', 0)} pages")
+        print(f"  Labeled:    {summary.get('total_pages_labeled', 0)} pages")
+
+
+def _do_agent(recorder, config, categories, hierarchy, data_dir, args):
+    from classivore.agent.runner import run_agent
+
     summary = run_agent(
         config=config,
         categories=categories,
@@ -675,16 +801,13 @@ def _cmd_agent(args):
         data_dir=data_dir,
         max_iterations=args.max_iterations,
         target_per_category=args.target,
-        dry_run=args.dry_run,
+        dry_run=False,
         poll_interval=args.poll_interval,
         verbose=args.verbose,
     )
-
-    if not args.dry_run:
-        print(f"\nAgent complete:")
-        print(f"  Iterations: {summary.get('iterations_completed', 0)}")
-        print(f"  Collected:  {summary.get('total_pages_collected', 0)} pages")
-        print(f"  Labeled:    {summary.get('total_pages_labeled', 0)} pages")
+    if "metrics" in summary:
+        recorder.metrics.update(summary["metrics"])
+    return summary
 
 
 def _cmd_init(args):

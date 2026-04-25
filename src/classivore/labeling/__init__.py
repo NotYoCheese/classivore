@@ -55,6 +55,16 @@ def _empty_usage_totals():
     }
 
 
+def _empty_funnel():
+    return {
+        "stage1_sent": 0,
+        "tier1_hits": 0,
+        "stage2_sent": 0,
+        "labels_emitted": 0,
+        "errors": 0,
+    }
+
+
 def _accumulate_usage(totals, stats):
     for key in (
         "total_input_tokens",
@@ -146,19 +156,20 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
 
     stage1_usage = None
     stage2_usage = None
+    funnel = _empty_funnel()
 
     # Stage 1
     if stage in ("all", "1"):
         stage1_usage = _run_stage1(
             client, label_state, page_lookup, tier1_categories,
-            config, labels_dir, poll_interval,
+            config, labels_dir, poll_interval, funnel,
         )
 
     # Stage 2
     if stage in ("all", "2"):
         stage2_usage = _run_stage2(
             client, label_state, page_lookup, content_categories,
-            config, labels_dir, poll_interval,
+            config, labels_dir, poll_interval, funnel,
         )
 
     # Write output
@@ -171,11 +182,21 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
         summary["stage1_usage"] = stage1_usage
     if stage2_usage:
         summary["stage2_usage"] = stage2_usage
+    summary["labeling_metrics"] = {
+        **funnel,
+        "cache": {
+            **({"stage1": stage1_usage} if stage1_usage else {}),
+            **({"stage2": stage2_usage} if stage2_usage else {}),
+        },
+    }
     return summary
 
 
-def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir, poll_interval):
-    """Run stage 1: tier-1 triage. Returns aggregated usage stats dict."""
+def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir, poll_interval, funnel):
+    """Run stage 1: tier-1 triage. Returns aggregated usage stats dict.
+
+    Mutates `funnel` with stage1_sent / tier1_hits counters.
+    """
     usage_totals = _empty_usage_totals()
     needing = state.pages_needing_stage1()
     if not needing:
@@ -209,6 +230,8 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
                 "messages": [{"role": "user", "content": user_msg}],
             },
         })
+
+    funnel["stage1_sent"] += len(requests)
 
     # Process in chunks
     for chunk_start in range(0, len(requests), BATCH_CHUNK_SIZE):
@@ -244,6 +267,7 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
 
                 if filtered:
                     state.complete_stage1(content_hash, filtered)
+                    funnel["tier1_hits"] += 1
                 else:
                     state.complete_stage1(content_hash, [])
 
@@ -256,8 +280,11 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
     return _finalize_usage(usage_totals)
 
 
-def _run_stage2(client, state, page_lookup, content_categories, config, labels_dir, poll_interval):
-    """Run stage 2: subtree classification. Returns aggregated usage stats dict."""
+def _run_stage2(client, state, page_lookup, content_categories, config, labels_dir, poll_interval, funnel):
+    """Run stage 2: subtree classification. Returns aggregated usage stats dict.
+
+    Mutates `funnel` with stage2_sent / labels_emitted / errors counters.
+    """
     usage_totals = _empty_usage_totals()
     needing = state.pages_needing_stage2()
     if not needing:
@@ -312,6 +339,8 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
                 },
             })
 
+    funnel["stage2_sent"] += len(requests)
+
     # Process in chunks
     for chunk_start in range(0, len(requests), BATCH_CHUNK_SIZE):
         chunk = requests[chunk_start:chunk_start + BATCH_CHUNK_SIZE]
@@ -339,12 +368,14 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
 
                 if "error" in result:
                     state.mark_error(content_hash, result["error"])
+                    funnel["errors"] += 1
                 else:
                     state.complete_stage2(
                         content_hash,
                         result["categories"],
                         result.get("reasoning", ""),
                     )
+                    funnel["labels_emitted"] += len(result["categories"])
 
         state.save()
 

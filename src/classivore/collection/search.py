@@ -335,6 +335,29 @@ class SearchClient:
 
         self.exhausted = set()
 
+    @property
+    def usage_counters(self):
+        """Per-provider counters: queries fired, results returned, content fetches."""
+        if not hasattr(self, "_usage_counters"):
+            self._usage_counters = {
+                "queries_by_provider": {},
+                "results_by_provider": {},
+                "content_fetches_by_provider": {},
+            }
+        return self._usage_counters
+
+    def _bump_query(self, name):
+        c = self.usage_counters["queries_by_provider"]
+        c[name] = c.get(name, 0) + 1
+
+    def _bump_results(self, name, n):
+        c = self.usage_counters["results_by_provider"]
+        c[name] = c.get(name, 0) + n
+
+    def _bump_content_fetch(self, name):
+        c = self.usage_counters["content_fetches_by_provider"]
+        c[name] = c.get(name, 0) + 1
+
     def search(self, query, count=10):
         """Search using providers in priority order.
 
@@ -345,6 +368,7 @@ class SearchClient:
             if provider["name"] in self.exhausted:
                 continue
 
+            self._bump_query(provider["name"])
             results = provider["fn"](query, provider["api_key"], count)
 
             if results is None:
@@ -352,6 +376,7 @@ class SearchClient:
                 self.exhausted.add(provider["name"])
                 continue
 
+            self._bump_results(provider["name"], len(results))
             return results
 
         # All providers exhausted or failed
@@ -373,6 +398,7 @@ class SearchClient:
         )
         if not exa_provider:
             return None
+        self._bump_content_fetch("exa")
         return fetch_exa_content(url, exa_provider["api_key"])
 
     def reset_exhausted(self):
