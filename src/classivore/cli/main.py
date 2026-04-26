@@ -24,6 +24,10 @@ Commands:
 import argparse
 import sys
 
+from classivore.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -472,8 +476,9 @@ def _cmd_validate(args):
                         row[config.name_column]
                         for row in reader
                     ]
-        except Exception:
-            pass  # taxonomy loading is optional for validation
+        except Exception as e:
+            # Taxonomy loading is optional for validation — fall through.
+            logger.debug("validation_taxonomy_load_skipped", taxonomy=args.taxonomy, error=str(e))
 
         report = validate_labeled(
             data_dir=data_dir,

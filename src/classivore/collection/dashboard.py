@@ -12,7 +12,10 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from classivore.logging_config import get_logger
 from classivore.persistence import iter_ndjson
+
+logger = get_logger(__name__)
 
 
 def format_status_dashboard(state, domains, corpus_file=None, taxonomy_slug="",
@@ -47,8 +50,8 @@ def format_status_dashboard(state, domains, corpus_file=None, taxonomy_slug="",
         try:
             total_corpus = sum(1 for line in open(corpus_file) if line.strip())
             lines.append(f"           {total_corpus} total corpus pages (shared)")
-        except Exception:
-            pass
+        except OSError as e:
+            logger.debug("dashboard_corpus_count_failed", path=str(corpus_file), error=str(e))
 
     # --- Coverage histogram from labels ---
     if labels_dir and target_per_category:
@@ -75,7 +78,8 @@ def _add_run_info(lines, state):
             hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
             minutes = remainder // 60
             lines.append(f"Started:     {state.started_at} ({hours}h {minutes}m ago)")
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.debug("dashboard_started_at_parse_failed", raw=state.started_at, error=str(e))
             lines.append(f"Started:     {state.started_at}")
     else:
         lines.append("Started:     Not yet started")

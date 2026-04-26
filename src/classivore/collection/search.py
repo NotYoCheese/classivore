@@ -77,7 +77,8 @@ def search_brave(query, api_key, count=10):
             if reset and attempt == 0:
                 try:
                     delay = min(int(reset), 10)
-                except ValueError:
+                except ValueError as e:
+                    logger.debug("brave_retry_after_parse_failed", raw=reset, error=str(e))
                     delay = BACKOFF_DELAYS[attempt]
             else:
                 delay = BACKOFF_DELAYS[min(attempt, len(BACKOFF_DELAYS) - 1)]
@@ -127,8 +128,8 @@ def _check_brave_quota(resp):
                 monthly = int(parts[1])
                 if monthly < BRAVE_MONTHLY_QUOTA_WARNING:
                     logger.warning("brave_quota_low", remaining=monthly)
-            except ValueError:
-                pass
+            except ValueError as e:
+                logger.debug("brave_quota_header_parse_failed", raw=remaining, error=str(e))
 
 
 # --- Serper (Google results) ---

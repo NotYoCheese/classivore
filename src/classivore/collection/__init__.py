@@ -16,6 +16,7 @@ Flow:
 import json
 import signal
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -136,6 +137,7 @@ def run_collection(config, categories, data_dir, resume=True,
         "rejected": {},
     }
 
+    error_info = None
     try:
         for cat in leaf_cats:
             if _interrupted or state.is_satisfied(cat["name"]):
@@ -272,6 +274,13 @@ def run_collection(config, categories, data_dir, resume=True,
                 satisfied=f"{summary['satisfied_categories']}/{summary['total_categories']}",
             )
 
+    except Exception as e:
+        error_info = {
+            "type": type(e).__name__,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        logger.exception("run_collection_failed", error=str(e))
     finally:
         # Always save on exit (normal, interrupt, or exception)
         _save_checkpoint(state, domains, collected_pages, corpus_file)
@@ -284,6 +293,8 @@ def run_collection(config, categories, data_dir, resume=True,
         "search": dict(search_client.usage_counters),
         "scrape": scrape_counters,
     }
+    if error_info:
+        summary["error_info"] = error_info
     return summary
 
 

@@ -10,6 +10,7 @@ and batch ID tracking for resume.
 """
 
 import json
+import traceback
 from pathlib import Path
 
 from classivore.batch import (
@@ -157,23 +158,33 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
     stage1_usage = None
     stage2_usage = None
     funnel = _empty_funnel()
+    error_info = None
 
-    # Stage 1
-    if stage in ("all", "1"):
-        stage1_usage = _run_stage1(
-            client, label_state, page_lookup, tier1_categories,
-            config, labels_dir, poll_interval, funnel,
-        )
+    try:
+        # Stage 1
+        if stage in ("all", "1"):
+            stage1_usage = _run_stage1(
+                client, label_state, page_lookup, tier1_categories,
+                config, labels_dir, poll_interval, funnel,
+            )
 
-    # Stage 2
-    if stage in ("all", "2"):
-        stage2_usage = _run_stage2(
-            client, label_state, page_lookup, content_categories,
-            config, labels_dir, poll_interval, funnel,
-        )
-
-    # Write output
-    _write_labels(label_state, labels_dir)
+        # Stage 2
+        if stage in ("all", "2"):
+            stage2_usage = _run_stage2(
+                client, label_state, page_lookup, content_categories,
+                config, labels_dir, poll_interval, funnel,
+            )
+    except Exception as e:
+        error_info = {
+            "type": type(e).__name__,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        logger.exception("run_labeling_failed", error=str(e))
+    finally:
+        # Always write whatever labels we have so far
+        _write_labels(label_state, labels_dir)
+        label_state.save()
 
     _print_usage_summary(stage1_usage, stage2_usage)
 
@@ -189,6 +200,8 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
             **({"stage2": stage2_usage} if stage2_usage else {}),
         },
     }
+    if error_info:
+        summary["error_info"] = error_info
     return summary
 
 

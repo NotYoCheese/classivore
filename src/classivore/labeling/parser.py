@@ -60,7 +60,8 @@ def parse_stage1_response(message):
         try:
             text = _extract_text(message)
             return _salvage_truncated_categories(text)
-        except Exception:
+        except Exception as salvage_err:
+            logger.debug("stage1_salvage_failed", error=str(salvage_err))
             return []
 
 
@@ -78,7 +79,8 @@ def _salvage_truncated_categories(text):
         name = match.group(1)
         try:
             confidence = float(match.group(2))
-        except ValueError:
+        except ValueError as e:
+            logger.debug("salvage_skip_bad_confidence", name=name, raw=match.group(2), error=str(e))
             continue
         results.append({"name": name, "confidence": confidence})
 

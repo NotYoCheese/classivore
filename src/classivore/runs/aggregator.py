@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 from typing import Iterable, Optional
 
+from classivore.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def load_runs(
     runs_path: Path,
@@ -33,7 +37,8 @@ def load_runs(
                 continue
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.debug("runs_jsonl_record_decode_failed", error=str(e))
                 continue
             if command and record.get("command") != command:
                 continue

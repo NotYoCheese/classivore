@@ -10,6 +10,10 @@ import hashlib
 import re
 from urllib.parse import urlparse
 
+from classivore.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 # --- Boilerplate detection (applied to first 500 chars of short pages) ---
 
 BOILERPLATE_PATTERNS = [
@@ -94,7 +98,8 @@ def _is_ecommerce_domain(url):
     """Check if a URL's domain has e-commerce signals."""
     try:
         domain = urlparse(url).netloc.lower()
-    except Exception:
+    except (AttributeError, ValueError) as e:
+        logger.debug("ecommerce_domain_check_failed", url=url, error=str(e))
         return False
     return any(signal in domain for signal in ECOMMERCE_DOMAIN_SIGNALS)
 
@@ -132,7 +137,8 @@ def is_url_blocked(url, relaxations=None):
         path = url.split("/", 3)[-1]
         if len(path) < effective_min_path_depth:
             return "url_too_shallow"
-    except (IndexError, ValueError):
+    except (IndexError, ValueError, AttributeError) as e:
+        logger.debug("url_parse_failed", url=url, error=str(e))
         return "url_parse_error"
 
     return None
@@ -231,7 +237,14 @@ def strip_cookie_banners(html):
     """
     from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(html, "html.parser")
+    # BS4's html.parser raises on malformed character refs (e.g. binary
+    # garbage from a gzipped WARC interpreted as text). Skip stripping
+    # rather than crashing the whole iteration.
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except (ValueError, AssertionError) as e:
+        logger.debug("strip_cookie_banners_parse_failed", error=str(e))
+        return html
 
     for pattern in COOKIE_BANNER_PATTERNS:
         # Remove by class

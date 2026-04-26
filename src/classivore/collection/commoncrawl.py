@@ -41,7 +41,8 @@ def probe_cdx(crawl_id):
             timeout=PROBE_TIMEOUT,
         )
         return resp.status_code == 200
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.debug("cdx_probe_failed", crawl_id=crawl_id, error=str(e))
         return False
 
 
@@ -64,7 +65,8 @@ def parse_cdx_response(text):
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.debug("cdx_record_json_decode_failed", error=str(e))
             continue
 
         if record.get("status", "200") != "200":
@@ -73,7 +75,8 @@ def parse_cdx_response(text):
         try:
             record["offset"] = int(record["offset"])
             record["length"] = int(record["length"])
-        except (ValueError, KeyError):
+        except (ValueError, KeyError) as e:
+            logger.debug("cdx_record_offset_length_invalid", error=str(e))
             continue
         records.append(record)
 
@@ -201,7 +204,8 @@ def _extract_text_from_warc(data):
                 content = warc_record.content_stream().read()
                 try:
                     return content.decode("utf-8")
-                except UnicodeDecodeError:
+                except UnicodeDecodeError as e:
+                    logger.debug("warc_utf8_decode_failed_fallback_latin1", error=str(e))
                     return content.decode("latin-1")
     except Exception as e:
         logger.warning("warc_extraction_failed", error=str(e))

@@ -33,6 +33,15 @@ def format_summary(record: dict, all_time: dict) -> str:
 
     metrics = record.get("metrics") or {}
     if metrics:
+        # Headline: pages collected this run vs. all-time
+        scrape = metrics.get("scrape", {})
+        scrape_total = all_time.get("scrape", {})
+        if scrape or scrape_total:
+            lines.append("")
+            kept_now = scrape.get("kept", 0)
+            kept_total = scrape_total.get("kept", 0)
+            lines.append(f"  Pages collected this run: {kept_now}  (all-time: {kept_total})")
+
         lines.append("")
         lines.append(f"  {'':<26}{'THIS RUN':>12}  {'ALL TIME':>12}")
 
@@ -47,6 +56,10 @@ def format_summary(record: dict, all_time: dict) -> str:
 
         if "coverage" in metrics:
             lines.extend(_format_coverage(metrics.get("coverage", {}), all_time.get("coverage", {})))
+
+        errors = metrics.get("errors") or []
+        if errors:
+            lines.extend(_format_errors(errors))
 
     lines.append("=" * 64)
     return "\n".join(lines)
@@ -121,6 +134,19 @@ def _format_labeling(this_run: dict, all_time: dict) -> list[str]:
     return out
 
 
+def _format_errors(errors: list) -> list[str]:
+    out = ["", "  Errors during run"]
+    for e in errors:
+        iter_n = e.get("iteration", "?")
+        stage = e.get("stage", "?")
+        etype = e.get("type", "?")
+        msg = e.get("message", "")
+        if len(msg) > 80:
+            msg = msg[:77] + "..."
+        out.append(f"    iteration {iter_n} / {stage}: {etype}: {msg}")
+    return out
+
+
 def _format_coverage(this_run: dict, all_time: dict) -> list[str]:
     out = ["", "  Coverage"]
     if "at_target_after" in this_run:
@@ -147,10 +173,9 @@ def _kv_row(label: str, this_val: Any, total_val: Any, indent: int = 4) -> str:
 def _fmt_int(n: Any) -> str:
     if isinstance(n, float) and not n.is_integer():
         return f"{n:.2f}"
-    try:
+    if isinstance(n, (int, float)):
         return f"{int(n):,}"
-    except (TypeError, ValueError):
-        return str(n)
+    return str(n)
 
 
 def _format_duration(seconds: float) -> str:

@@ -173,7 +173,8 @@ class CollectionState:
                 url_time = datetime.fromisoformat(ts)
                 if (now - url_time).total_seconds() <= minutes * 60:
                     count += 1
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.debug("urls_in_window_skip_bad_timestamp", timestamp=ts, error=str(e))
                 continue
         return count
 
