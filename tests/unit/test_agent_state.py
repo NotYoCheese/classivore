@@ -168,3 +168,21 @@ class TestStopConditions:
         # labeled=0 but min_yield check: 0 < 0 is False, so no stop from min_yield
         # consecutive zero: only 1, need 2
         assert not should_stop
+
+    def test_errored_iterations_excluded_from_zero_yield(self, tmp_path):
+        """Errored iterations don't count toward the zero-yield streak —
+        they signal a transient failure (API outage, credit exhaustion),
+        not exhausted yield."""
+        state = AgentState(tmp_path / "agent")
+        config = AgentConfig(max_consecutive_zero_yield=2)
+
+        for i in range(2):
+            state.start_iteration(_make_plan(i))
+            r = _make_result(i, labeled=0)
+            r.errored = True
+            state.complete_iteration(r)
+
+        should_stop, reason = state.should_stop(config)
+        assert not should_stop, (
+            f"errored iterations triggered stop with reason: {reason!r}"
+        )

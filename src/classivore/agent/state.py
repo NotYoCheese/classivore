@@ -99,9 +99,12 @@ class AgentState:
             if last["gaps_after"] == 0:
                 return True, "all categories satisfied"
 
-        # Consecutive zero yield
-        if len(completed) >= config.max_consecutive_zero_yield:
-            recent = completed[-config.max_consecutive_zero_yield:]
+        # Consecutive zero yield — only from iterations that actually ran to
+        # completion. Errored iterations (collection or labeling crashed)
+        # don't prove yield is exhausted, just that something transient broke.
+        clean = [i for i in completed if not i["result"].get("errored")]
+        if len(clean) >= config.max_consecutive_zero_yield:
+            recent = clean[-config.max_consecutive_zero_yield:]
             if all(i["result"]["pages_labeled"] == 0 for i in recent):
                 return True, (
                     f"{config.max_consecutive_zero_yield} consecutive iterations "

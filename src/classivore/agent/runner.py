@@ -170,6 +170,10 @@ def run_agent(
         )
         new_labels = max(0, post_report.total_labeled_pages - report.total_labeled_pages)
 
+        errored = (
+            "error_info" in collection_summary
+            or "error_info" in labeling_summary
+        )
         result = IterationResult(
             iteration=i,
             pages_collected=collection_summary.get("total_collected", 0),
@@ -178,6 +182,7 @@ def run_agent(
             categories_satisfied_after=post_report.satisfied_categories,
             gaps_before=len(report.gaps),
             gaps_after=len(post_report.gaps),
+            errored=errored,
         )
         agent_state.complete_iteration(result)
 

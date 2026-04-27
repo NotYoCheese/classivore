@@ -151,6 +151,7 @@ class TaxonomyConfig:
         self.tier1_confidence_threshold: float = labeling.get("tier1_confidence_threshold", 0.3)
         self.labeling_temperature: float = labeling.get("temperature", 0.0)
         self.text_truncation_words: int = labeling.get("text_truncation_words", 3000)
+        self.prompt_cache: bool = labeling.get("prompt_cache", False)
         self.excluded_tier1_categories: list = self._raw.get("excluded_tier1_categories", [])
 
         # Collection hints

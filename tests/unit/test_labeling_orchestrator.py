@@ -21,6 +21,7 @@ def _make_config():
     config.min_confidence = 0.5
     config.max_labels = 3
     config.excluded_tier1_categories = ["Content Language"]
+    config.prompt_cache = True
     return config
 
 
@@ -436,6 +437,41 @@ class TestPromptCaching:
         submitted = mock_submit.call_args.args[1]
         systems = [req["params"]["system"] for req in submitted]
         assert all(s == systems[0] for s in systems)
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_prompt_cache_off_sends_plain_string_system(
+        self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path,
+    ):
+        """With prompt_cache=False, the system field is a raw string and
+        carries no cache_control wrapper — saves the cache_write premium."""
+        _write_corpus(tmp_path, _make_pages(2))
+        mock_client.return_value = MagicMock()
+        mock_submit.return_value = "batch_s1"
+
+        msg = MagicMock()
+        block = MagicMock()
+        block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+        msg.content = [block]
+        mock_iter.return_value = [("s1-hash0", msg), ("s1-hash1", msg)]
+
+        config = _make_config()
+        config.prompt_cache = False
+
+        run_labeling(
+            config=config,
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="1",
+        )
+
+        submitted = mock_submit.call_args.args[1]
+        for req in submitted:
+            system = req["params"]["system"]
+            assert isinstance(system, str) and system, "expected raw string system"
 
 
 class TestCacheStatsLogging:
