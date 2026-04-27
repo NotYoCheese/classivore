@@ -121,6 +121,11 @@ def _register_label(subparsers):
     p.add_argument("--poll-interval", type=int, default=30, help="Batch poll interval in seconds")
     p.add_argument("--status", action="store_true", help="Show labeling progress and exit")
     p.add_argument("--json", action="store_true", help="Print run record as JSON instead of summary")
+    p.add_argument(
+        "--prompt-cache", dest="prompt_cache", action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override prompt_cache config (use --no-prompt-cache to force off).",
+    )
     p.set_defaults(func=_cmd_label)
 
 
@@ -499,6 +504,9 @@ def _cmd_label(args):
 
     config = load_taxonomy_config(args.taxonomy)
     data_dir = get_data_dir(args.data_dir)
+
+    if args.prompt_cache is not None:
+        config.prompt_cache = args.prompt_cache
 
     if args.status:
         from pathlib import Path

@@ -41,8 +41,15 @@ BATCH_CHUNK_SIZE = 10000
 _CACHE_CONTROL_1H = {"type": "ephemeral", "ttl": "1h"}
 
 
-def _cacheable_system(system_prompt):
-    """Wrap a system prompt string in a cache-controlled content block."""
+def _cacheable_system(system_prompt, enabled):
+    """Return system prompt as a cache-controlled block list or a plain string.
+
+    Caching only pays off when reads-per-write exceeds the break-even ratio
+    (~1.11 for 1h TTL on batch Haiku 4.5). Below that, the cache_write
+    premium costs more than the read savings — so caching is opt-in.
+    """
+    if not enabled:
+        return system_prompt
     return [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL_1H}]
 
 
@@ -186,7 +193,7 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
         _write_labels(label_state, labels_dir)
         label_state.save()
 
-    _print_usage_summary(stage1_usage, stage2_usage)
+    _print_usage_summary(stage1_usage, stage2_usage, config.prompt_cache)
 
     summary = label_state.summary()
     if stage1_usage:
@@ -219,7 +226,7 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
     logger.info("stage1_triaging", page_count=len(needing), tier1_count=len(tier1_categories))
 
     system_prompt = build_stage1_system(tier1_categories)
-    system_blocks = _cacheable_system(system_prompt)
+    system_blocks = _cacheable_system(system_prompt, config.prompt_cache)
     valid_tier1_names = {c["name"] for c in tier1_categories}
 
     # Build batch requests
@@ -330,7 +337,7 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
             max_labels=config.max_labels,
             min_confidence=config.min_confidence,
         )
-        system_blocks = _cacheable_system(system_prompt)
+        system_blocks = _cacheable_system(system_prompt, config.prompt_cache)
 
         for content_hash in hashes:
             page = page_lookup.get(content_hash)
@@ -450,14 +457,15 @@ def _save_raw_line(raw_file, custom_id, message):
         logger.warning("raw_result_save_failed", custom_id=custom_id, error=str(e))
 
 
-def _print_usage_summary(stage1_usage, stage2_usage):
+def _print_usage_summary(stage1_usage, stage2_usage, prompt_cache):
     """Print a human-readable cache and cost summary to stdout."""
     stages = [("Stage 1", stage1_usage), ("Stage 2", stage2_usage)]
     stages = [(name, u) for name, u in stages if u is not None]
     if not stages:
         return
 
-    print("\nLabeling usage (prompt cache enabled, 1h TTL):")
+    cache_state = "prompt cache enabled, 1h TTL" if prompt_cache else "prompt cache disabled"
+    print(f"\nLabeling usage ({cache_state}):")
     total_cost = 0.0
     for name, u in stages:
         total_cost += u["estimated_cost_usd"]
