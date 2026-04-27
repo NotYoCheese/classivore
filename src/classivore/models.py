@@ -60,6 +60,7 @@ class IterationResult:
     gaps_after: int
     collection_summary: dict = field(default_factory=dict)
     labeling_summary: dict = field(default_factory=dict)
+    errored: bool = False
 
 
 @dataclass
