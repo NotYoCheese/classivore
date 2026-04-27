@@ -340,6 +340,49 @@ class TestCoverageHistogram:
         assert hist["50+"] == 1
 
 
+class TestRejectedReasons:
+    def test_initial_empty(self, state):
+        assert state.rejected_reasons == {}
+
+    def test_record_url_with_reason_buckets(self, state):
+        state.init_category("Tech", target=5)
+        state.record_url(
+            "https://example.com/short", "Tech", "filtered", "live_scrape",
+            reason="too_short:42",
+        )
+        assert state.rejected_reasons == {"too_short": 1}
+
+    def test_variable_suffixes_collapse_into_one_bucket(self, state):
+        state.init_category("Tech", target=5)
+        state.record_url("https://a.com/1", "Tech", "filtered", "live_scrape", reason="too_short:42")
+        state.record_url("https://b.com/2", "Tech", "filtered", "live_scrape", reason="too_short:51")
+        state.record_url("https://c.com/3", "Tech", "filtered", "search", reason="url_blocklist:foo")
+        state.record_url("https://d.com/4", "Tech", "filtered", "search", reason="url_blocklist:bar")
+        assert state.rejected_reasons == {"too_short": 2, "url_blocklist": 2}
+
+    def test_record_url_without_reason_does_not_bump(self, state):
+        state.init_category("Tech", target=5)
+        state.record_url("https://example.com/a", "Tech", "collected", "live_scrape")
+        assert state.rejected_reasons == {}
+
+    def test_record_domain_cap(self, state):
+        state.record_domain_cap("Tech", "https://example.com/a")
+        state.record_domain_cap("Tech", "https://example.com/b")
+        assert state.rejected_reasons["domain_cap"] == 2
+
+    def test_persist_through_save_and_load(self, state_dir):
+        state = CollectionState(state_dir)
+        state.init_category("Tech", target=5)
+        state.record_url(
+            "https://a.com/x", "Tech", "filtered", "live_scrape", reason="boilerplate",
+        )
+        state.record_domain_cap("Tech", "https://a.com/y")
+        state.save()
+
+        loaded = CollectionState(state_dir)
+        assert loaded.rejected_reasons == {"boilerplate": 1, "domain_cap": 1}
+
+
 class TestSummary:
     def test_summary(self, state):
         state.init_category("Automotive", target=10)
@@ -364,3 +407,9 @@ class TestSummary:
         state.record_search_error()
         summary = state.summary()
         assert summary["error_counts"]["search_errors"] == 1
+
+    def test_summary_includes_rejected_reasons(self, state):
+        state.init_category("Tech", target=5)
+        state.record_url("https://a.com/x", "Tech", "filtered", "search", reason="too_short:42")
+        summary = state.summary()
+        assert summary["rejected_reasons"] == {"too_short": 1}

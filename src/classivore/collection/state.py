@@ -33,6 +33,10 @@ class CollectionState:
             "filtered": 0,
             "duplicates": 0,
         }
+        # Histogram of rejection reasons (e.g. "too_short", "boilerplate",
+        # "url_blocklist", "domain_cap"). Suffixes after ':' are stripped so
+        # variable-data reasons ("too_short:42") collapse into a single bucket.
+        self.rejected_reasons: dict[str, int] = {}
 
         if self.state_file.exists():
             data = json.loads(self.state_file.read_text())
@@ -41,6 +45,7 @@ class CollectionState:
             self.started_at = data.get("started_at")
             self.last_checkpoint_at = data.get("last_checkpoint_at")
             self.error_counts = data.get("error_counts", self.error_counts)
+            self.rejected_reasons = data.get("rejected_reasons", {})
 
     def save(self):
         """Atomically save state to disk via temp+rename."""
@@ -53,6 +58,7 @@ class CollectionState:
             "started_at": self.started_at,
             "last_checkpoint_at": self.last_checkpoint_at,
             "error_counts": self.error_counts,
+            "rejected_reasons": self.rejected_reasons,
             "categories": self.categories,
             "urls": self.urls,
         }
@@ -89,7 +95,7 @@ class CollectionState:
             return False
         return query in cat["queries_tried"]
 
-    def record_url(self, url, category, status, source):
+    def record_url(self, url, category, status, source, reason=None):
         """Record a URL's collection result.
 
         Args:
@@ -97,6 +103,9 @@ class CollectionState:
             category: Category name this URL was collected for.
             status: One of 'collected', 'failed', 'filtered', 'duplicate'.
             source: One of 'commoncrawl', 'live_scrape', 'search'.
+            reason: Optional rejection reason (e.g. "too_short:42",
+                "url_blocklist:foo"). Suffixes after ':' are stripped before
+                bucketing into the rejection histogram.
         """
         self.urls[url] = {
             "category": category,
@@ -113,6 +122,10 @@ class CollectionState:
         elif status == "duplicate":
             self.error_counts["duplicates"] += 1
 
+        if reason:
+            bucket = reason.split(":", 1)[0]
+            self.rejected_reasons[bucket] = self.rejected_reasons.get(bucket, 0) + 1
+
         cat = self.categories.get(category)
         if not cat:
             return
@@ -121,6 +134,10 @@ class CollectionState:
             cat["collected"] += 1
             domain = urlparse(url).netloc
             cat["source_domains"][domain] = cat["source_domains"].get(domain, 0) + 1
+
+    def record_domain_cap(self, category, url):
+        """Record a URL skipped due to per-category per-domain cap."""
+        self.rejected_reasons["domain_cap"] = self.rejected_reasons.get("domain_cap", 0) + 1
 
     def record_search_error(self):
         """Increment search error counter."""
@@ -156,7 +173,8 @@ class CollectionState:
                 url_time = datetime.fromisoformat(ts)
                 if (now - url_time).total_seconds() <= minutes * 60:
                     count += 1
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.debug("urls_in_window_skip_bad_timestamp", timestamp=ts, error=str(e))
                 continue
         return count
 
@@ -194,4 +212,5 @@ class CollectionState:
             "started_at": self.started_at,
             "last_checkpoint_at": self.last_checkpoint_at,
             "error_counts": dict(self.error_counts),
+            "rejected_reasons": dict(self.rejected_reasons),
         }

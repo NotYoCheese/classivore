@@ -538,3 +538,116 @@ class TestSearchClient:
         client = SearchClient.from_config(config)
         assert len(client.providers) == 1
         assert client.providers[0]["name"] == "brave"
+
+
+class TestSearchClientCounters:
+    def _make_provider(self, name, fn):
+        return {"name": name, "fn": fn, "api_key": "test-key"}
+
+    def test_counts_query_per_provider(self):
+        def brave_fn(q, k, c):
+            return [{"url": "https://b/a", "title": "", "description": ""}]
+
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [self._make_provider("brave", brave_fn)]
+        client.exhausted = set()
+
+        client.search("q1")
+        client.search("q2")
+        client.search("q3")
+
+        assert client.usage_counters["queries_by_provider"]["brave"] == 3
+
+    def test_counts_results_per_provider(self):
+        def brave_fn(q, k, c):
+            return [{"url": "https://b/a", "title": "", "description": ""},
+                    {"url": "https://b/b", "title": "", "description": ""}]
+
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [self._make_provider("brave", brave_fn)]
+        client.exhausted = set()
+
+        client.search("q1")
+        client.search("q2")
+
+        assert client.usage_counters["results_by_provider"]["brave"] == 4
+
+    def test_attributes_query_to_fallback_provider(self):
+        """When the first provider returns None, both it and the fallback should
+        be counted (one query each)."""
+        def brave_fn(q, k, c):
+            return None
+
+        def serper_fn(q, k, c):
+            return [{"url": "https://s/a", "title": "", "description": ""}]
+
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [
+            self._make_provider("brave", brave_fn),
+            self._make_provider("serper", serper_fn),
+        ]
+        client.exhausted = set()
+
+        client.search("q")
+
+        assert client.usage_counters["queries_by_provider"]["brave"] == 1
+        assert client.usage_counters["queries_by_provider"]["serper"] == 1
+        # Brave returned None — no results from it
+        assert client.usage_counters["results_by_provider"].get("brave", 0) == 0
+        assert client.usage_counters["results_by_provider"]["serper"] == 1
+
+    def test_does_not_count_exhausted_providers(self):
+        def brave_fn(q, k, c):
+            return [{"url": "https://b/a", "title": "", "description": ""}]
+
+        def serper_fn(q, k, c):
+            return [{"url": "https://s/a", "title": "", "description": ""}]
+
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [
+            self._make_provider("brave", brave_fn),
+            self._make_provider("serper", serper_fn),
+        ]
+        client.exhausted = {"brave"}
+
+        client.search("q")
+
+        assert "brave" not in client.usage_counters["queries_by_provider"]
+        assert client.usage_counters["queries_by_provider"]["serper"] == 1
+
+    def test_counts_zero_results_call(self):
+        """A successful-but-empty result still counts as a query."""
+        def brave_fn(q, k, c):
+            return []
+
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [self._make_provider("brave", brave_fn)]
+        client.exhausted = set()
+
+        client.search("q")
+
+        assert client.usage_counters["queries_by_provider"]["brave"] == 1
+        assert client.usage_counters["results_by_provider"].get("brave", 0) == 0
+
+    @patch("classivore.collection.search.fetch_exa_content")
+    def test_counts_content_fetches(self, mock_fetch):
+        mock_fetch.return_value = "text"
+        client = SearchClient.__new__(SearchClient)
+        client.providers = [self._make_provider("exa", search_exa)]
+        client.exhausted = set()
+
+        client.fetch_content("https://example.com/a")
+        client.fetch_content("https://example.com/b")
+
+        assert client.usage_counters["content_fetches_by_provider"]["exa"] == 2
+
+    def test_counters_lazy_init_with_new(self):
+        """Tests that bypass __init__ via __new__ still get counters via property."""
+        client = SearchClient.__new__(SearchClient)
+        # No __init__ called, no _usage_counters attribute set
+        # Property should lazy-init
+        assert client.usage_counters == {
+            "queries_by_provider": {},
+            "results_by_provider": {},
+            "content_fetches_by_provider": {},
+        }

@@ -23,12 +23,16 @@ STOPWORDS = {
 }
 
 # Template patterns organized by search intent.
-# {name} = category name, {scope} = immediate parent (or tier1 for depth ≤ 2),
-# {year} = current year, {kw} = keywords (aliases if available, else description),
+# {name} = category name, {year} = current year,
+# {kw} = keywords (aliases if available, else description),
 # {bkw} = keywords from boundaries.
+#
+# Templates intentionally avoid injecting the literal parent-category name
+# (formerly {scope}) — search engines respond poorly to "Phone Services in
+# Home Utilities" or "Oral Care Style and Fashion". The parent's *angle*
+# should be encoded in the category's aliases instead.
 QUERY_TEMPLATES = [
     # --- Informational ---
-    '"{name}" article {scope}',
     "what is {name}",
     "{name} explained",
     "understanding {name}",
@@ -45,7 +49,6 @@ QUERY_TEMPLATES = [
     '"{kw}" guide {year}',
     "{kw} documentary",
     "{name} culture and community",
-    "{scope} {name} overview",
     # --- How-to / Practical ---
     "{name} tips and advice",
     "{name} best practices",
@@ -69,13 +72,9 @@ QUERY_TEMPLATES = [
     "{kw} guide",
     "{kw} analysis {year}",
     "{kw} explained",
-    "{kw} {scope}",
     # --- Boundary keyword variants ---
     "{bkw} article",
     "{bkw} {name}",
-    # --- Scope-level context (deeper categories only) ---
-    "{name} {scope} explained",
-    "{name} in {scope}",
 ]
 
 QUERY_SYSTEM_PROMPT = """You generate search queries to find high-quality articles for a content taxonomy.
@@ -116,9 +115,6 @@ def generate_template_queries(category, tried=None):
     name = category["name"]
     description = category.get("description", "")
     boundaries = category.get("boundaries", "")
-    path = category.get("path", [name])
-    tier1 = path[0] if path else name
-    scope = path[-2] if len(path) >= 3 else tier1
     year = str(datetime.now(timezone.utc).year)
 
     aliases = category.get("aliases", [])
@@ -132,17 +128,10 @@ def generate_template_queries(category, tried=None):
         kw_str = " ".join(desc_keywords) if desc_keywords else name.lower()
         bkw_str = " ".join(boundary_keywords) if boundary_keywords else ""
 
-    is_deep = len(path) > 1
-
     queries = []
     seen = set()
 
     for template in QUERY_TEMPLATES:
-        # Skip scope-level templates for root categories
-        if not is_deep and "{scope}" in template and "{name}" in template:
-            if template in ("{name} {scope} explained", "{name} in {scope}"):
-                continue
-
         # Skip boundary keyword templates if no boundary text
         if "{bkw}" in template and not bkw_str:
             continue
@@ -150,7 +139,6 @@ def generate_template_queries(category, tried=None):
         query = (
             template
             .replace("{name}", name)
-            .replace("{scope}", scope)
             .replace("{year}", year)
             .replace("{kw}", kw_str)
             .replace("{bkw}", bkw_str)

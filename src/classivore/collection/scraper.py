@@ -111,7 +111,8 @@ def _bs4_extract(html):
     """
     try:
         soup = BeautifulSoup(html, "html.parser")
-    except Exception:
+    except Exception as e:
+        logger.debug("bs4_parse_failed", error=str(e))
         return None
 
     paragraphs = []

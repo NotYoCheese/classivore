@@ -16,6 +16,7 @@ Flow:
 import json
 import signal
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -128,6 +129,15 @@ def run_collection(config, categories, data_dir, resume=True,
     total_cats = len(leaf_cats)
     cats_processed = 0
 
+    # Per-run scrape counters (separate from state, which is cumulative)
+    scrape_counters = {
+        "urls_surfaced": 0,
+        "fetched": 0,
+        "kept": 0,
+        "rejected": {},
+    }
+
+    error_info = None
     try:
         for cat in leaf_cats:
             if _interrupted or state.is_satisfied(cat["name"]):
@@ -207,6 +217,7 @@ def run_collection(config, categories, data_dir, resume=True,
                         break
 
                     url = result["url"]
+                    scrape_counters["urls_surfaced"] += 1
 
                     # Skip known URLs
                     if state.is_url_known(url):
@@ -217,30 +228,37 @@ def run_collection(config, categories, data_dir, resume=True,
                     relaxations = config.filter_config.get_relaxations(tier1)
                     block_reason = is_url_blocked(url, relaxations=relaxations)
                     if block_reason:
-                        state.record_url(url, cat["name"], "filtered", "search")
+                        state.record_url(url, cat["name"], "filtered", "search", reason=block_reason)
+                        _bump_rejected(scrape_counters, block_reason)
                         continue
 
                     # Domain checks
                     domain = urlparse(url).netloc
                     if domains.is_blocked(domain):
-                        state.record_url(url, cat["name"], "filtered", "search")
+                        state.record_url(url, cat["name"], "filtered", "search", reason="domain_blocked")
+                        _bump_rejected(scrape_counters, "domain_blocked")
                         continue
 
                     if state.get_domain_count(cat["name"], domain) >= config.max_per_domain_per_category:
+                        state.record_domain_cap(cat["name"], url)
+                        _bump_rejected(scrape_counters, "domain_cap")
                         continue
 
                     # Retrieve content: use prefetched text if available (e.g. Exa),
                     # otherwise try Common Crawl → live scrape → Exa /contents
                     prefetched_text = result.get("text") or None
+                    scrape_counters["fetched"] += 1
                     page = _retrieve_and_filter(
                         url, cat["name"], config, state, domains, seen_hashes,
                         use_cdx=cdx_available, relaxations=relaxations,
                         prefetched_text=prefetched_text,
                         search_client=search_client,
+                        scrape_counters=scrape_counters,
                     )
 
                     if page:
                         collected_pages.append(page)
+                        scrape_counters["kept"] += 1
 
                 # Checkpoint after each query cycle
                 _save_checkpoint(state, domains, collected_pages, corpus_file)
@@ -256,6 +274,13 @@ def run_collection(config, categories, data_dir, resume=True,
                 satisfied=f"{summary['satisfied_categories']}/{summary['total_categories']}",
             )
 
+    except Exception as e:
+        error_info = {
+            "type": type(e).__name__,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        logger.exception("run_collection_failed", error=str(e))
     finally:
         # Always save on exit (normal, interrupt, or exception)
         _save_checkpoint(state, domains, collected_pages, corpus_file)
@@ -263,7 +288,20 @@ def run_collection(config, categories, data_dir, resume=True,
         domains.save()
         signal.signal(signal.SIGINT, prev_handler)
 
-    return state.summary()
+    summary = state.summary()
+    summary["metrics"] = {
+        "search": dict(search_client.usage_counters),
+        "scrape": scrape_counters,
+    }
+    if error_info:
+        summary["error_info"] = error_info
+    return summary
+
+
+def _bump_rejected(counters, reason):
+    """Bump rejection histogram with bucketed reason."""
+    bucket = reason.split(":", 1)[0]
+    counters["rejected"][bucket] = counters["rejected"].get(bucket, 0) + 1
 
 
 def _generate_llm_queries(cat, categories, config, tried, queries_only):
@@ -345,7 +383,7 @@ def _generate_llm_queries(cat, categories, config, tried, queries_only):
 
 def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,
                          use_cdx=True, relaxations=None, prefetched_text=None,
-                         search_client=None):
+                         search_client=None, scrape_counters=None):
     """Try to retrieve and filter a single URL. Returns page dict or None.
 
     Fetch priority:
@@ -384,24 +422,32 @@ def _retrieve_and_filter(url, category, config, state, domains, seen_hashes,
         if not text:
             state.record_url(url, category, "failed", source)
             domains.record_result(urlparse(url).netloc, success=False)
+            if scrape_counters is not None:
+                _bump_rejected(scrape_counters, "fetch_failed")
             return None
 
     if not text:
         state.record_url(url, category, "failed", source)
         domains.record_result(urlparse(url).netloc, success=False)
+        if scrape_counters is not None:
+            _bump_rejected(scrape_counters, "fetch_failed")
         return None
 
     # Content filter
     filtered_text, reason = filter_page(text, relaxations=relaxations)
     if not filtered_text:
-        state.record_url(url, category, "filtered", source)
+        state.record_url(url, category, "filtered", source, reason=reason)
         domains.record_result(urlparse(url).netloc, success=False)
+        if scrape_counters is not None and reason:
+            _bump_rejected(scrape_counters, reason)
         return None
 
     # Dedup
     text_hash = content_hash(filtered_text)
     if text_hash in seen_hashes:
         state.record_url(url, category, "duplicate", source)
+        if scrape_counters is not None:
+            _bump_rejected(scrape_counters, "duplicate")
         return None
 
     seen_hashes.add(text_hash)

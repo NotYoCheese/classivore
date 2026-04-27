@@ -132,8 +132,8 @@ def parse_enrichment(message):
             aliases,
             difficulty,
         )
-    except (_json.JSONDecodeError, AttributeError):
-        pass
+    except (_json.JSONDecodeError, AttributeError) as e:
+        logger.debug("enricher_json_parse_failed_falling_back_to_lines", error=str(e))
 
     # Fallback: line-based parsing
     lines = [line.strip() for line in text.split("\n") if line.strip()]

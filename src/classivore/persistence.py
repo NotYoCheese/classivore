@@ -6,6 +6,10 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+from classivore.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def atomic_json_save(data: dict, target: Path, directory: Path | None = None) -> None:
     """Write JSON atomically via temp file + rename.
@@ -68,7 +72,8 @@ def iter_ndjson(path: Path) -> Iterator[dict]:
                 continue
             try:
                 yield json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.debug("ndjson_line_decode_failed", path=str(path), error=str(e))
                 continue
 
 
