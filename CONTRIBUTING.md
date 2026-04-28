@@ -4,11 +4,13 @@ Thanks for your interest in contributing. This guide covers the basics of how th
 
 ## Branching
 
-- `main` — release-tagged versions only. Each commit is a squash-merge from `develop` titled `v{X.Y.Z} — {summary}` and tagged.
+- `main` — release-tagged versions only. Updated from `develop` via a `--no-ff` merge commit at release time, then tagged `v{X.Y.Z}`.
 - `develop` — integration branch. All feature branches target `develop`.
-- `feature/<short-name>` — your work goes here. Branch from `develop`, PR back to `develop`.
+- `feature/<short-name>` — your work goes here. Branch from `develop`, PR back to `develop` (squash-merge).
 
 Never commit directly to `main` or `develop`.
+
+**Why `--no-ff` for `develop` → `main` (and not squash):** squash-merging a long-lived branch into another long-lived branch breaks the merge-base, which causes phantom conflicts (most visibly in `CHANGELOG.md`) on the next release. Squashing is fine `feature` → `develop` because the feature branch dies after the merge.
 
 ## Pull request checklist
 

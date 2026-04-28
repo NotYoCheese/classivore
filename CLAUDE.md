@@ -35,6 +35,13 @@ Read the relevant file before modifying that subsystem:
 - Use `#!/usr/bin/env python3` as the first line of Python files.
 - Prefer `uv` over `pip` when possible.
 
+## Git workflow
+
+- `feature/<name>` → `develop`: **squash-merge** (feature branch dies after merge).
+- `develop` → `main`: **`--no-ff` merge commit** at release time, then tag `v{X.Y.Z}` on the merge commit. Do NOT squash develop into main — squashing long-lived branches breaks the merge-base and creates phantom conflicts on the next release.
+- Never commit directly to `main` or `develop`. Both branches are protected.
+- Use gitmoji at the start of commit messages (`✨`, `🐛`, `📝`, `🔧`, `🚸`, `🔖`).
+
 ## Environment
 
 - Development machine: M1 Max MacBook Pro
