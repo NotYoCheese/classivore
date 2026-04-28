@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-04-28
+
+### Training
+
+- Fix `split_data` to actually stratify train/val/test by label. Previous
+  versions computed a stratification key but never used it, falling back to
+  a plain random shuffle. This left thin-tail categories with 0–2 test
+  samples, making per-category F1 statistically meaningless. Now uses
+  multi-label iterative stratification (Sechidis et al. 2011) via
+  `iterative-stratification`. New dependency: `iterative-stratification>=0.1.7`.
+
+### Labeling
+
+- Add opt-in prompt caching for stage-1 and stage-2 system prompts via
+  `cache_control` blocks with 1-hour TTL. Disabled by default — caching
+  only pays off when reads-per-write exceeds break-even and the cached
+  block clears the model's minimum cacheable token threshold (2,048 for
+  Haiku 4.5). Toggle via `labeling.prompt_cache` config or
+  `--prompt-cache / --no-prompt-cache` CLI flag.
+- Token-usage accounting tracks `cache_creation_input_tokens` and
+  `cache_read_input_tokens` per batch with aggregated cache hit rate.
+
+### Collection
+
+- Add Exa AI as a third search provider with neural/semantic fallback when
+  Brave and Serper are exhausted, plus scrape fallback via Exa `/contents`
+  when live scraping is blocked. Exa results include prefetched page text,
+  letting the collector skip scraping for those URLs.
+- Fall through the search cascade on Serper 400 responses (returned when
+  credits are exhausted — Serper does not use 401/402/403 for quota).
+- Drop literal parent-name injection from collection query templates;
+  parent context now flows through descriptions instead.
+
+### Agent
+
+- Add per-run statistics tracking with NDJSON history under `data/agent_runs/`.
+- Stop iteration-counting only includes successful zero-yield iterations;
+  errored iterations no longer falsely trigger the stop condition.
+- Surface labeling/training metrics on failure and audit silent exception
+  swallowing in the agent loop.
+
 ## [1.2.2] - 2026-04-24
 
 ### Inference
