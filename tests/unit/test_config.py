@@ -67,14 +67,14 @@ class TestTaxonomyConfig:
     def test_collection_settings_loaded(self):
         """Collection settings load from config."""
         config = load_taxonomy_config("iab-2.2")
-        assert config.targets_by_difficulty == {"easy": 30, "medium": 50, "hard": 80, "default": 40}
-        assert config.target_per_category == 40  # convenience alias = default tier
+        assert config.targets_by_difficulty == {"easy": 30, "medium": 50, "hard": 80, "default": 80}
+        assert config.target_per_category == 80  # convenience alias = default tier
         assert config.max_queries_by_difficulty["hard"] == 30
         assert config.max_per_domain_per_category == 3
         assert config.commoncrawl_crawl_id == "CC-MAIN-2026-08"
         # Helper methods
         assert config.get_target("hard") == 80
-        assert config.get_target("") == 40  # unknown difficulty → default
+        assert config.get_target("") == 80  # unknown difficulty → default
         assert config.use_llm_queries("hard", 0) is False  # hard starts at iteration 1
         assert config.use_llm_queries("hard", 1) is True
         assert config.use_llm_queries("easy", 0) is False
