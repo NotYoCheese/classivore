@@ -25,7 +25,7 @@ class_weight_cap: 7.0
 
 1. Load reviewed data, filter rejected pages
 2. Encode labels with MultiLabelBinarizer (n_samples × n_categories)
-3. Split 70/20/10 train/val/test
+3. Split 70/20/10 train/val/test with multi-label iterative stratification (Sechidis et al. 2011) via `iterative-stratification` — keeps per-label representation proportional across all three splits so per-category F1 stays meaningful for tail categories
 4. Fine-tune DeBERTa with focal loss + class weights. Training sets `problem_type="multi_label_classification"` in the saved `config.json`; `Classifier` reads this at load time to choose the output activation.
 5. Early stopping on validation F1
 6. Save model + tokenizer + artifacts (see below)
