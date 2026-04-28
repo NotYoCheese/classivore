@@ -824,13 +824,13 @@ def _do_agent(recorder, config, categories, hierarchy, data_dir, args):
 
 
 def _cmd_init(args):
-    import shutil
     from pathlib import Path
 
     import yaml
 
     from classivore.taxonomy.onboarding import (
         generate_default_config,
+        normalize_taxonomy_csv,
         print_onboarding_report,
         validate_csv,
         write_config,
@@ -869,10 +869,13 @@ def _cmd_init(args):
     tax_dir = taxonomies_dir / slug
     tax_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. Copy CSV
+    # 3. Normalize CSV — compute path/depth/is_leaf/children_count from parent_id
     dest_csv = tax_dir / "taxonomy.csv"
-    shutil.copy2(csv_path, dest_csv)
-    print(f"\nCopied taxonomy CSV to {dest_csv}")
+    normalize_taxonomy_csv(
+        csv_path, dest_csv,
+        id_col=args.id_col, name_col=args.name_col, parent_col=args.parent_col,
+    )
+    print(f"\nWrote normalized taxonomy CSV to {dest_csv}")
 
     # 4. Generate and write config
     config_dict = generate_default_config(

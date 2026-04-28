@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Taxonomy
+
+- Fix `classivore init` to compute `path`, `depth`, `is_leaf`, and
+  `children_count` from the `parent_id` graph and write a normalized
+  `taxonomy.csv`. Previously `init` did `shutil.copy2` of the input CSV
+  verbatim, so taxonomies onboarded from a raw three-column source (id,
+  parent_id, name) ended up with every category looking like a depth-1
+  leaf to the loader, breaking enrichment, collection, and training.
+
 ## [1.3.0] - 2026-04-28
 
 ### Training
