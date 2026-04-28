@@ -121,6 +121,8 @@ def _register_label(subparsers):
     p.add_argument("--poll-interval", type=int, default=30, help="Batch poll interval in seconds")
     p.add_argument("--status", action="store_true", help="Show labeling progress and exit")
     p.add_argument("--json", action="store_true", help="Print run record as JSON instead of summary")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Cap each stage at N pages this run (for cost-bounded sampling). Resumes naturally on subsequent runs.")
     p.add_argument(
         "--prompt-cache", dest="prompt_cache", action=argparse.BooleanOptionalAction,
         default=None,
@@ -532,6 +534,7 @@ def _cmd_label(args):
             config=config, categories=categories, hierarchy=hierarchy,
             data_dir=data_dir, stage=args.stage, dry_run=True,
             poll_interval=args.poll_interval, verbose=args.verbose,
+            limit=args.limit,
         )
         return
 
@@ -567,6 +570,7 @@ def _do_label(recorder, config, categories, hierarchy, data_dir, args):
         dry_run=False,
         poll_interval=args.poll_interval,
         verbose=args.verbose,
+        limit=args.limit,
     )
     if "labeling_metrics" in summary:
         recorder.metrics["labeling"] = summary["labeling_metrics"]

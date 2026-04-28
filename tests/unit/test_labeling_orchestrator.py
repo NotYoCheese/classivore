@@ -280,6 +280,87 @@ class TestResume:
         assert summary["stage2_complete"] == 1
 
 
+class TestLimit:
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_limit_caps_stage1_pages(self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path):
+        """--limit N caps stage 1 at N pages this run, leaving the rest for next run."""
+        _write_corpus(tmp_path, _make_pages(5))
+        mock_client.return_value = MagicMock()
+        mock_submit.return_value = "batch_s1"
+        mock_poll.return_value = MagicMock()
+
+        def make_s1_result(hash_id):
+            msg = MagicMock()
+            block = MagicMock()
+            block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+            msg.content = [block]
+            return (f"s1-{hash_id}", msg)
+
+        mock_iter.return_value = [make_s1_result(f"hash{i}") for i in range(2)]
+
+        summary = run_labeling(
+            config=_make_config(),
+            categories=_make_categories(),
+            hierarchy=_make_hierarchy(),
+            data_dir=tmp_path,
+            stage="1",
+            limit=2,
+        )
+
+        # Only 2 pages submitted; the other 3 still need stage 1
+        assert summary["stage1_complete"] == 2
+        assert summary["unlabeled"] == 3
+
+        # Inspect the requests passed to submit_batch — should be exactly 2
+        submitted_requests = mock_submit.call_args[0][1]
+        assert len(submitted_requests) == 2
+
+    @patch("classivore.labeling.iter_succeeded_results")
+    @patch("classivore.labeling.poll_until_complete")
+    @patch("classivore.labeling.submit_batch")
+    @patch("classivore.labeling.get_api_client")
+    def test_limit_resumes_on_subsequent_run(self, mock_client, mock_submit, mock_poll, mock_iter, tmp_path):
+        """A second run with --limit picks up pages the first run did not touch."""
+        _write_corpus(tmp_path, _make_pages(5))
+        mock_client.return_value = MagicMock()
+        mock_submit.return_value = "batch"
+        mock_poll.return_value = MagicMock()
+
+        def make_s1_result(hash_id):
+            msg = MagicMock()
+            block = MagicMock()
+            block.text = json.dumps({"categories": [{"name": "Automotive", "confidence": 0.9}]})
+            msg.content = [block]
+            return (f"s1-{hash_id}", msg)
+
+        # First run: limit 2 → labels hash0, hash1
+        mock_iter.return_value = [make_s1_result(f"hash{i}") for i in range(2)]
+        run_labeling(
+            config=_make_config(), categories=_make_categories(),
+            hierarchy=_make_hierarchy(), data_dir=tmp_path,
+            stage="1", limit=2,
+        )
+
+        # Second run: limit 2 → should label hash2, hash3 (next two unlabeled)
+        mock_iter.return_value = [make_s1_result(f"hash{i}") for i in range(2, 4)]
+        summary = run_labeling(
+            config=_make_config(), categories=_make_categories(),
+            hierarchy=_make_hierarchy(), data_dir=tmp_path,
+            stage="1", limit=2,
+        )
+
+        assert summary["stage1_complete"] == 4
+        assert summary["unlabeled"] == 1
+
+        # Second submit_batch call should have requested hash2 and hash3
+        second_call_requests = mock_submit.call_args_list[1][0][1]
+        custom_ids = sorted(r["custom_id"] for r in second_call_requests)
+        assert custom_ids == ["s1-hash2", "s1-hash3"]
+
+
 class TestOutput:
     @patch("classivore.labeling.iter_succeeded_results")
     @patch("classivore.labeling.poll_until_complete")
