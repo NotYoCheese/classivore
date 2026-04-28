@@ -225,6 +225,18 @@ class TestSearchSerper:
         results = search_serper("test", api_key="key")
         assert results == []
 
+    @pytest.mark.parametrize("status", [400, 401, 402, 403])
+    @patch("classivore.collection.search.time.sleep")
+    @patch("classivore.collection.search.requests.post")
+    def test_returns_none_on_quota_or_auth_failure(self, mock_post, mock_sleep, status):
+        """4xx auth/quota codes (including 400 — Serper's 'Not enough credits')
+        must return None so the cascade falls through to the next provider."""
+        resp = _make_serper_resp(status=status)
+        resp.text = "Not enough credits"
+        mock_post.return_value = resp
+        results = search_serper("test", api_key="key")
+        assert results is None
+
 
 # --- Exa parsing ---
 

@@ -175,8 +175,16 @@ def search_serper(query, api_key, count=10):
 
         time.sleep(SERPER_REQUEST_INTERVAL)
 
-        if resp.status_code in (401, 402, 403):
-            logger.warning("serper_quota_or_auth_failure", status_code=resp.status_code)
+        # Serper returns 400 (not just 401/402/403) when credits are exhausted
+        # or the key is rejected — body usually reads "Not enough credits" or
+        # "Unauthorized". Treat all 4xx auth/quota codes as provider failure
+        # so the cascade falls through to the next provider.
+        if resp.status_code in (400, 401, 402, 403):
+            logger.warning(
+                "serper_quota_or_auth_failure",
+                status_code=resp.status_code,
+                body=resp.text[:200],
+            )
             return None  # trigger fallback to next provider
 
         if resp.status_code != 200:
