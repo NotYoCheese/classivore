@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 from torch.utils.data import Dataset
 
 from classivore.logging_config import get_logger
@@ -184,10 +185,12 @@ def load_training_data(config, data_dir):
 
 
 def split_data(data, train_ratio=0.7, val_ratio=0.2, seed=42):
-    """Split data into train/val/test sets with stratified sampling.
+    """Multi-label stratified split into train/val/test.
 
-    Stratifies by the highest-confidence label per sample (for multi-label,
-    this gives a reasonable approximation of balanced splits).
+    Uses iterative stratification (Sechidis et al. 2011) to keep each
+    label's representation proportional across all three splits. A plain
+    random split lands thin-tail categories with 0–2 test samples by
+    chance, which makes per-category F1 statistically meaningless.
 
     Args:
         data: Dict from load_training_data.
@@ -200,22 +203,22 @@ def split_data(data, train_ratio=0.7, val_ratio=0.2, seed=42):
             texts, label_matrix, confidence_matrix, indices
     """
     n = len(data["texts"])
-    rng = np.random.RandomState(seed)
+    test_ratio = 1.0 - train_ratio - val_ratio
+    Y = data["label_matrix"]
+    X = np.arange(n).reshape(-1, 1)
 
-    # Stratification key: argmax of label vector (most common label)
-    strat_keys = data["label_matrix"].argmax(axis=1)
+    s1 = MultilabelStratifiedShuffleSplit(
+        n_splits=1, test_size=test_ratio, random_state=seed
+    )
+    trainval_idx, test_idx = next(s1.split(X, Y))
 
-    # Shuffle indices
-    indices = np.arange(n)
-    rng.shuffle(indices)
-
-    # Simple stratified split
-    train_end = int(n * train_ratio)
-    val_end = int(n * (train_ratio + val_ratio))
-
-    train_idx = indices[:train_end]
-    val_idx = indices[train_end:val_end]
-    test_idx = indices[val_end:]
+    val_within = val_ratio / (train_ratio + val_ratio)
+    s2 = MultilabelStratifiedShuffleSplit(
+        n_splits=1, test_size=val_within, random_state=seed
+    )
+    inner_train, inner_val = next(s2.split(X[trainval_idx], Y[trainval_idx]))
+    train_idx = trainval_idx[inner_train]
+    val_idx = trainval_idx[inner_val]
 
     def _subset(idx):
         return {
