@@ -297,6 +297,39 @@ class TestSplitData:
 
         assert list(s1["train"]["indices"]) != list(s2["train"]["indices"])
 
+    def test_per_label_balance(self):
+        """Each label's representation should be proportional in each split.
+
+        With proper multi-label stratification, every label gets ~70/20/10
+        of its total samples in train/val/test. A plain random split would
+        routinely produce 0 test samples for thin labels — this test
+        verifies (a) every label has presence in every split, and (b) the
+        per-label ratios are within 5% of the target.
+        """
+        n = 2000
+        rng = np.random.RandomState(0)
+        # Imbalanced label frequencies (the case stratification matters for):
+        # half the labels are common (p=0.20), half are rare (p=0.05).
+        probs = np.concatenate([np.full(10, 0.20), np.full(10, 0.05)])
+        label_matrix = (rng.random((n, 20)) < probs).astype(np.float32)
+        label_matrix[label_matrix.sum(axis=1) == 0, 0] = 1
+        data = {
+            "texts": [f"t{i}" for i in range(n)],
+            "label_matrix": label_matrix,
+            "confidence_matrix": np.ones((n, 20), dtype=np.float32),
+        }
+        splits = split_data(data, train_ratio=0.7, val_ratio=0.2)
+        total_per_label = label_matrix.sum(axis=0)
+        for split_name, target_ratio in [("train", 0.7), ("val", 0.2), ("test", 0.1)]:
+            split_per_label = splits[split_name]["label_matrix"].sum(axis=0)
+            assert np.all(split_per_label > 0), (
+                f"{split_name}: some label has 0 representation: {split_per_label}"
+            )
+            ratio = split_per_label / total_per_label
+            assert np.all(np.abs(ratio - target_ratio) < 0.05), (
+                f"{split_name}: per-label ratio outside 5% of {target_ratio}: {ratio}"
+            )
+
 
 class TestClassificationDataset:
     def test_len(self):
