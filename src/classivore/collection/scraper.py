@@ -42,6 +42,17 @@ BROWSER_HEADERS = {
 REQUEST_TIMEOUT = 20
 
 
+def _fetch_response(url):
+    """Issue the GET request with browser headers and a rotating UA.
+
+    Returns the raw `requests.Response` so callers (the bench, primarily)
+    can inspect status codes, headers, and body length on non-200s. The
+    public `fetch_page` wraps this and returns just the HTML string.
+    """
+    headers = {**BROWSER_HEADERS, "User-Agent": random.choice(USER_AGENTS)}
+    return requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+
+
 def fetch_page(url):
     """Download a page and return raw HTML.
 
@@ -51,13 +62,8 @@ def fetch_page(url):
     Returns:
         HTML string, or None on failure or non-HTML response.
     """
-    headers = {**BROWSER_HEADERS, "User-Agent": random.choice(USER_AGENTS)}
     try:
-        resp = requests.get(
-            url,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT,
-        )
+        resp = _fetch_response(url)
     except Exception as e:
         logger.warning("fetch_failed", url=url, error=str(e))
         return None
