@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Labeling
+
+- Add `--limit N` flag to `classivore label` for cost-bounded sampling. Caps
+  each stage at N pages this run; subsequent runs naturally pick up where
+  the previous run left off via the existing label state. Useful for
+  baselining cost on a subset before committing to the full corpus, or for
+  spreading a large labeling job across multiple smaller batches.
+
 ### Taxonomy
 
 - Fix `classivore init` to compute `path`, `depth`, `is_leaf`, and
