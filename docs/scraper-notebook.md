@@ -45,6 +45,70 @@ Each entry follows this template. Copy it (or use `python tools/scraper_bench.py
 
 <!-- Newest entries on top. Append above this line. -->
 
+## curl_cffi_local — 2026-05-05
+
+**Environment:** local M1 Max MacBook. Swapped `requests` → `curl_cffi.requests` impersonating `chrome131`. UA strings, browser headers, timeout, cookie-banner stripping, trafilatura/BS4 extraction all unchanged. One-line behavioral change.
+**URL set:** `tools/fixtures/urls_top200.txt` (252 URLs, identical to baselines).
+**Concurrency / per-domain:** 8 / 2.
+
+### Metrics
+- success rate (`ok` / total): **193 / 252 = 76.6%** (vs 37.3% baseline_local — **+39.3 pp**).
+- median fetch_ms: 252 (vs 178 baseline), p95: 1046.
+- median extract_ms: **567** (vs 46 baseline), p95: 1776.
+- outcomes: `ok` 193, `empty_extraction` 42, `http_error` 15, `blocked` 2, `timeout` 0.
+- HTTP status: **200×237** (vs 200 baseline), 202×2, 401×3, 403×8 (vs 39), 429×2.
+
+### Side-by-side vs baseline_local
+
+| | baseline | curl_cffi | Δ |
+|---|---:|---:|---:|
+| ok | 94 | **193** | **+99** |
+| empty_extraction | 105 | 42 | -63 |
+| http_error | 48 | 15 | -33 |
+| timeout | 5 | 0 | -5 |
+| 403 responses | 39 | 8 | **-31** |
+| 200 responses | 200 | 237 | +37 |
+| same-URL agreement | — | 54.0% | — |
+| flipped TO ok | — | **104** | — |
+| flipped FROM ok | — | 5 | — |
+
+### Where the +99 ok URLs came from
+
+- **69 from `empty_extraction` → `ok`.** These were Cloudflare-style interstitials all along — large HTML bodies that contained "Just a moment…" or challenge JavaScript with no extractable article text. We had been mis-classifying them as extractor failures. Real articles now.
+- **30 from `http_error` → `ok`.** Direct 403 → 200 wins on Bloomberg, Politico, FT, Adidas, Macy's, Quora, Medium, every Dotdash Meredith property, etc.
+- **5 from `timeout` → `ok`.** Fingerprint-based blocks were dropping the connection rather than rejecting cleanly; curl_cffi handshakes through.
+
+### 22-host fingerprint-determined block list (from baseline_hetzner cross-reference)
+
+The hypothesis from the Hetzner run was that 22 hosts 403 in *both* IP environments — those should be the curl_cffi target. The data confirms it:
+
+- **31 of 39 baseline_local 403 hosts recovered.** Includes all 22 hosts on the cross-IP "fingerprint-determined" overlap list, plus 9 more that 403'd locally only.
+- **8 hosts still 403 with curl_cffi:** `etsy.com`, `inc.com`, `petco.com`, `skynews.com`, `surfer.com`, `thekitchn.com`, `tripadvisor.com`, `www2.hm.com`. Likely behavioral signals beyond TLS — JS execution, prior session cookies, mouse-movement telemetry — and not addressable by impersonation alone. Filing this as the curl_cffi-resistant residue.
+
+### Regressions (5 URLs were ok in baseline, not-ok with curl_cffi)
+
+- `https://www.barrons.com/` → HTTP 401 (paywall hardening; possibly correlated with the cleaner fingerprint making us look more like a real reader).
+- `https://www.pinterest.com/`, `https://www.a16z.com/`, `https://www.ulta.com/`, `https://www.statnews.com/` → all `empty_extraction` (returned 200 with bodies that don't extract). Plausibly: site-side feature detection serves a JS-only shell to chrome131 but a static fallback to `requests`. Small enough to ignore for now.
+
+Net: +99 / -5 = +94 URL improvement.
+
+### Cost
+
+- Extract is ~10× slower (46 ms median → 567 ms median). That's because extracted bodies are now real article HTML (kilobytes of meaningful DOM) rather than thin interstitial pages. Not a regression — it's the cost of actually having content to extract.
+- Fetch is ~40% slower (178 ms median → 252 ms median) — curl_cffi's full handshake mimicry has a per-request overhead. Negligible at our scale; the orchestrator already rate-limits well below this ceiling.
+- Dependency footprint: `curl_cffi>=0.7.0` adds a wheel with native `curl-impersonate` binaries (~10 MB).
+
+### Hypothesis tested
+- *Belief:* "TLS fingerprint, not IP reputation, is the dominant lever for the 22-host fingerprint-determined block set."
+- *Result:* **Confirmed and underestimated.** Fingerprint mimicry not only cleared the 22-host set but also recovered 9 more 403 hosts and 69 stealth-block pages we'd been mis-attributing to extractor failure. The intervention is more powerful than the cross-IP analysis predicted because Cloudflare interstitials disguised as 200-with-empty-extraction were a hidden category.
+
+### Next step
+- **Ship.** Standalone PR — drop-in `curl_cffi` replacement, no API change to `fetch_page`, all 619 tests green.
+- The 8 still-403 hosts (etsy, inc, petco, skynews, surfer, thekitchn, tripadvisor, h&m) and 5 regressions go in the followup queue. Likely needs Playwright/headless-browser, not more impersonation.
+- Empty-extraction count fell from 105 → 42, so the readability-lxml/jusText spike from the baseline notebook is much less urgent than it looked. Defer.
+
+---
+
 ## baseline_hetzner — 2026-05-05
 
 **Environment:** Hetzner Cloud (Falkenstein), bare `python3 tools/scraper_bench.py run` over the same scraper config as local. IP `178.156.229.253/32` (datacenter ASN).
