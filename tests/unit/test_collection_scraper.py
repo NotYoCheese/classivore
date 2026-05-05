@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from classivore.collection.scraper import (
-    USER_AGENTS,
+    IMPERSONATE,
     extract_text,
     fetch_page,
 )
@@ -86,7 +86,7 @@ class TestFetchPage:
         assert html == SAMPLE_HTML
 
     @patch("classivore.collection.scraper.requests.get")
-    def test_sets_user_agent(self, mock_get):
+    def test_uses_impersonation(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.text = "<html></html>"
@@ -94,8 +94,9 @@ class TestFetchPage:
         mock_get.return_value = mock_resp
 
         fetch_page("https://example.com/article")
-        headers = mock_get.call_args.kwargs.get("headers", {})
-        assert headers.get("User-Agent") in USER_AGENTS
+        kwargs = mock_get.call_args.kwargs
+        assert kwargs.get("impersonate") == IMPERSONATE
+        assert "headers" not in kwargs or not kwargs.get("headers")
 
     @patch("classivore.collection.scraper.requests.get")
     def test_returns_none_on_non_200(self, mock_get):
@@ -123,5 +124,5 @@ class TestFetchPage:
         result = fetch_page("https://example.com/down")
         assert result is None
 
-    def test_multiple_user_agents(self):
-        assert len(USER_AGENTS) >= 3
+    def test_impersonation_profile_set(self):
+        assert IMPERSONATE == "chrome131"
