@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Labeling
+
+- Add `--limit N` flag to `classivore label` for cost-bounded sampling. Caps
+  each stage at N pages this run; subsequent runs naturally pick up where
+  the previous run left off via the existing label state. Useful for
+  baselining cost on a subset before committing to the full corpus, or for
+  spreading a large labeling job across multiple smaller batches.
+
+### Taxonomy
+
+- Fix `classivore init` to compute `path`, `depth`, `is_leaf`, and
+  `children_count` from the `parent_id` graph and write a normalized
+  `taxonomy.csv`. Previously `init` did `shutil.copy2` of the input CSV
+  verbatim, so taxonomies onboarded from a raw three-column source (id,
+  parent_id, name) ended up with every category looking like a depth-1
+  leaf to the loader, breaking enrichment, collection, and training.
+
 ### Tools
 
 - Add `tools/scraper_bench.py` — a live-scrape benchmark for evaluating
@@ -18,15 +35,6 @@ All notable changes to this project will be documented in this file.
   `_fetch_response(url)` helper. The bench reuses the helper to inspect
   status codes, content-type, and response bodies on non-200s while
   keeping `fetch_page`'s public behavior identical.
-
-### Taxonomy
-
-- Fix `classivore init` to compute `path`, `depth`, `is_leaf`, and
-  `children_count` from the `parent_id` graph and write a normalized
-  `taxonomy.csv`. Previously `init` did `shutil.copy2` of the input CSV
-  verbatim, so taxonomies onboarded from a raw three-column source (id,
-  parent_id, name) ended up with every category looking like a depth-1
-  leaf to the loader, breaking enrichment, collection, and training.
 
 ## [1.3.0] - 2026-04-28
 
