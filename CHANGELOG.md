@@ -13,6 +13,15 @@ All notable changes to this project will be documented in this file.
   252-URL fixture (37.3% → 76.6%); 31 of 39 previously-403 hosts recovered.
   See `docs/scraper-notebook.md` for the full diff. New dependency:
   `curl_cffi>=0.7.0`.
+- Drop the manual `BROWSER_HEADERS` dict and `USER_AGENTS` rotation from
+  `scraper.py`. Both pre-dated the curl_cffi swap and were overriding
+  curl_cffi's auto-injected Chrome 131 header set — including replacing the
+  matching macOS UA with Linux/Windows strings on 2/3 of requests, which
+  WAFs cross-check against the macOS-shaped TLS handshake. Bench: **+1.6 pp**
+  local (76.6% → 78.2%) and **+2.3 pp** Hetzner (68.3% → 70.6%); 403s
+  drop 8→3 local and 28→24 Hetzner. Recovers etsy, inc.com, barrons on
+  both machines plus hm/reddit/threads/thekitchn locally and
+  walmart/kohls/sportingnews/smittenkitchen on Hetzner.
 
 ### Labeling
 
