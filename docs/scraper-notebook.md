@@ -45,6 +45,96 @@ Each entry follows this template. Copy it (or use `python tools/scraper_bench.py
 
 <!-- Newest entries on top. Append above this line. -->
 
+## clean_headers — 2026-05-05
+
+**Environment:** local M1 Max + Hetzner Cloud (Falkenstein DC). One-axis change against the `curl_cffi_*` runs: dropped `BROWSER_HEADERS` dict and `USER_AGENTS` rotation from `scraper.py`; `_fetch_response` now calls `requests.get(url, timeout=…, impersonate="chrome131")` with no header overrides. Lets curl_cffi's chrome131 profile own the entire header set (UA, Accept*, Sec-Ch-Ua*, Sec-Fetch-*, Priority, Upgrade-Insecure-Requests).
+**URL set:** `tools/fixtures/urls_top200.txt` (252 URLs, identical to all prior runs).
+**Concurrency / per-domain:** 8 / 2.
+
+### The 2×2 — fingerprint × headers
+
+|              | curl_cffi (overrides on) | clean_headers (overrides off) | row Δ |
+|--------------|-------------------------:|------------------------------:|------:|
+| **local M1** |                    76.6% |                     **78.2%** | +1.6  |
+| **Hetzner**  |                    68.3% |                     **70.6%** | +2.3  |
+
+Both directions positive, both within the 1–3 pp prediction. Fingerprint dominates; clean header set is a small but consistent additional lift on top.
+
+### Local — clean_headers_local
+- success rate: **197 / 252 = 78.2%** (vs `curl_cffi_local` 76.6%, **+1.6 pp**).
+- median fetch_ms: 267 (vs 252), p95 1065.
+- median extract_ms: 533, p95 1656.
+- outcomes: `ok` 197, `empty_extraction` 44, `http_error` 8, `blocked` 2, `timeout` 1.
+- HTTP status: 200×243, 202×2, 401×2, **403×3** (vs 8 — −5), 429×1.
+
+#### Side-by-side vs curl_cffi_local
+
+| | curl_cffi | clean_headers | Δ |
+|---|---:|---:|---:|
+| ok | 193 | **197** | +4 |
+| empty_extraction | 42 | 44 | +2 |
+| http_error | 15 | **8** | -7 |
+| blocked | 2 | 2 | 0 |
+| timeout | 0 | 1 | +1 |
+| 200 responses | 237 | 243 | +6 |
+| 202 | 2 | 2 | 0 |
+| 401 | 3 | 2 | -1 |
+| 403 | 8 | **3** | **-5** |
+| 429 | 2 | 1 | -1 |
+| recovered | — | 7 | — |
+| regressed | — | 3 | — |
+
+(The status rows roll up into `http_error`: anything other than 200 is treated as a fetch failure by `scraper.fetch_page`, including the 202s.)
+
+### Hetzner — clean_headers_hetzner
+- success rate: **178 / 252 = 70.6%** (vs `curl_cffi_hetzner` 68.3%, **+2.3 pp**).
+- median fetch_ms: 305, p95 1295.
+- median extract_ms: 1153, p95 3008 (Hetzner CPU still the dominant cost on extract).
+- outcomes: `ok` 178, `empty_extraction` 36, `http_error` 34, `blocked` 3, `timeout` 1.
+- HTTP status: 200×217, 202×2, 401×2, **403×24** (vs 28 — −4), 429×6.
+
+#### Side-by-side vs curl_cffi_hetzner
+
+| | curl_cffi | clean_headers | Δ |
+|---|---:|---:|---:|
+| ok | 172 | **178** | +6 |
+| empty_extraction | 36 | 36 | 0 |
+| http_error | 40 | **34** | -6 |
+| blocked | 3 | 3 | 0 |
+| timeout | 1 | 1 | 0 |
+| 200 responses | 211 | 217 | +6 |
+| 202 | 3 | 2 | -1 |
+| 401 | 3 | 2 | -1 |
+| 403 | 28 | **24** | **-4** |
+| 429 | 6 | 6 | 0 |
+| recovered | — | 7 | — |
+| regressed | — | 1 | — |
+
+(Same rollup as local — non-200 statuses including 202 land in `http_error`.)
+
+### Recoveries (curl_cffi → clean_headers)
+
+**Local — 7 recovered, 3 regressed** (net +4 = +1.6 pp):
+- Recovered: etsy, hm, reddit, threads.net, barrons, inc.com, thekitchn.
+- Regressed: cbc.ca (→empty), bestbuy.com (→empty), dwell.com (→timeout).
+
+**Hetzner — 7 recovered, 1 regressed** (net +6 = +2.3 pp):
+- Recovered: walmart, kohls, etsy, sportingnews, barrons, inc.com, smittenkitchen.
+- Regressed: cbc.ca (→empty).
+
+**Cross-machine recoveries:** etsy, inc.com, barrons recover on **both** local and Hetzner. Four of those — etsy, hm, inc.com, thekitchn — were on the original "8 still-403, fingerprint+IP-resistant" residue list flagged in `curl_cffi_local`. The UA/TLS-OS mismatch was the gate, not Playwright-shaped behavioral signals.
+
+### Hypothesis tested
+- *Belief:* "Cleaning the UA/TLS-OS mismatch should yield a small (1–3 pp) lift; the +39 pp curl_cffi win already happened despite the override."
+- *Result:* **Confirmed and slightly underestimated on the qualitative side.** The headline numbers (+1.6 / +2.3 pp) match the prediction. But the 403 drop is real (8→3 local, 28→24 Hetzner) and the recovery list includes hosts I'd written off as needing headless-browser intervention. UA/TLS cross-checking is a live signal at multiple WAFs, and zero-overhead to fix.
+
+### Next step
+- **Ship.** Code change is two files (`scraper.py` net −22 lines, `test_collection_scraper.py` updated).
+- The "still-403" residue shrinks: removing etsy, hm, inc.com, thekitchn from the local list leaves **petco, skynews, surfer, tripadvisor**. Hetzner residue similarly contracts. Filing the rest in the residential-proxy / Playwright queue.
+- No new dependency. No code complexity added — net deletion. The right kind of change.
+
+---
+
 ## header_bundles_skipped — 2026-05-05
 
 **Status:** experiment discarded pre-emptively. **No bench runs performed.**
