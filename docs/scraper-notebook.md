@@ -45,6 +45,56 @@ Each entry follows this template. Copy it (or use `python tools/scraper_bench.py
 
 <!-- Newest entries on top. Append above this line. -->
 
+## header_bundles_skipped — 2026-05-05
+
+**Status:** experiment discarded pre-emptively. **No bench runs performed.**
+
+**Hypothesis to test:** real Chrome sends a coordinated bundle of HTTP headers (`Sec-Ch-Ua`, `Sec-Ch-Ua-Mobile`, `Sec-Ch-Ua-Platform`, `Sec-Fetch-Dest/Mode/Site/User`, `Upgrade-Insecure-Requests`, plus consistent `Accept`/`Accept-Language`/`Accept-Encoding`). A scraper sending only `User-Agent` looks bot-like even with a perfect TLS fingerprint. Rotating internally-consistent header bundles per request might recover a few more URLs.
+
+**Pre-condition check (run before the experiment):** does `curl_cffi` already set these automatically when `impersonate="chrome131"` is configured?
+
+```python
+from curl_cffi import requests
+resp = requests.get("https://httpbin.org/headers", impersonate="chrome131")
+# echoed headers contain everything in scope:
+#   Accept: text/html,application/xhtml+xml,...,application/signed-exchange;v=b3;q=0.7
+#   Accept-Encoding: gzip, deflate, br, zstd
+#   Accept-Language: en-US,en;q=0.9
+#   Priority: u=0, i
+#   Sec-Ch-Ua: "Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"
+#   Sec-Ch-Ua-Mobile: ?0
+#   Sec-Ch-Ua-Platform: "macOS"
+#   Sec-Fetch-Dest: document
+#   Sec-Fetch-Mode: navigate
+#   Sec-Fetch-Site: none
+#   Sec-Fetch-User: ?1
+#   Upgrade-Insecure-Requests: 1
+#   User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ... Chrome/131.0.0.0 Safari/537.36
+```
+
+### Result
+**Every header named in the experiment scope is already injected by curl_cffi** when `impersonate="chrome131"` is set, plus `Priority: u=0, i` (HTTP/2 priority frame) which the experiment hadn't called out. The chrome131 impersonation profile is internally consistent by construction (Sec-Ch-Ua brand list matches the major version in User-Agent matches the platform claim in Sec-Ch-Ua-Platform).
+
+### Verdict
+**Discard pre-emptively** per the experiment's verdict criteria. Manually constructed `HEADER_BUNDLES` would at best duplicate what curl_cffi already does, and at worst drift from chrome131's actual on-the-wire header set as Chrome itself updates over time (curl_cffi's profile gets re-scraped from real Chrome periodically; a hardcoded dict in `headers.py` would not).
+
+No code change. No bench runs.
+
+### Incidental finding — header overrides may be undermining impersonation
+
+The header dump showed that the scraper's existing `BROWSER_HEADERS` dict and `USER_AGENTS` rotation — both pre-dating the curl_cffi swap — are **explicitly overriding** curl_cffi's auto-injected headers in three ways that plausibly hurt impersonation fidelity:
+
+1. **UA/TLS mismatch on ~2/3 of requests.** curl_cffi's TLS handshake fingerprints as "Chrome 131 on macOS"; the `USER_AGENTS` rotation replaces curl_cffi's matching UA with Windows NT or Linux x86_64 strings 2 times out of 3. WAFs cross-check TLS-OS vs UA-OS as a tell.
+2. **Weaker `Accept` / `Accept-Encoding`.** Our hardcoded values miss `image/apng`, `application/signed-exchange;v=b3;q=0.7`, and `zstd` — all things real Chrome 131 sends.
+3. **Adds `DNT: 1`.** Chrome 131 doesn't send DNT by default; only the small subset of users who toggled "Do Not Track" do. Sending it is itself a fingerprint.
+
+The +39 pp curl_cffi win held *despite* these mismatches. Cleaning them up is its own experiment with its own one-axis change ("remove explicit headers and UA rotation, let curl_cffi's chrome131 profile stand"). Filed as a follow-up. **Not bundled with this entry** — the experiment-spec rule of "one axis only" applies to follow-ups too.
+
+### Next step
+- Greenlight a separate experiment: drop `BROWSER_HEADERS` and `USER_AGENTS` rotation from `scraper.py`, let curl_cffi's chrome131 profile own the entire header set. Quantitative target: small (1–3 pp) since the +39 pp lift already happened despite the override; the question is whether residual http_errors carry a UA/TLS-mismatch signal we can clean up.
+
+---
+
 ## curl_cffi_hetzner — 2026-05-05
 
 **Environment:** Hetzner Cloud (Falkenstein, datacenter ASN), `curl_cffi.requests` impersonating `chrome131`. Same code as `curl_cffi_local`; only egress IP differs.
