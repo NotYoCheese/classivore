@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Collection
+
+- Replace `requests` with `curl_cffi` impersonating Chrome 131 in the live
+  scraper. TLS handshake, HTTP/2 settings, and header order now match a real
+  browser, getting us past Akamai/Cloudflare WAFs that fingerprint plain
+  `requests`. Bench measured **+39.3 pp** live-scrape success on a frozen
+  252-URL fixture (37.3% → 76.6%); 31 of 39 previously-403 hosts recovered.
+  See `docs/scraper-notebook.md` for the full diff. New dependency:
+  `curl_cffi>=0.7.0`.
+
 ### Labeling
 
 - Add `--limit N` flag to `classivore label` for cost-bounded sampling. Caps
