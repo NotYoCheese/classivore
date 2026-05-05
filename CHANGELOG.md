@@ -21,6 +21,21 @@ All notable changes to this project will be documented in this file.
   parent_id, name) ended up with every category looking like a depth-1
   leaf to the loader, breaking enrichment, collection, and training.
 
+### Tools
+
+- Add `tools/scraper_bench.py` — a live-scrape benchmark for evaluating
+  scraper improvements (UA rotation, residential proxies, curl_cffi, etc.)
+  against a frozen 200-URL fixture. Emits one JSONL record per URL with
+  outcome, timings, block markers, and a `would_have_used_exa` flag so
+  runs can be sliced and compared on the `--label` field. Read-only
+  against `DomainTracker` (it never calls `record_result()` or `save()`).
+- Add `docs/scraper-notebook.md` — append-only research log so failed
+  experiments stay documented and don't get re-investigated.
+- Refactor `scraper.fetch_page` to delegate the actual HTTP call to a new
+  `_fetch_response(url)` helper. The bench reuses the helper to inspect
+  status codes, content-type, and response bodies on non-200s while
+  keeping `fetch_page`'s public behavior identical.
+
 ## [1.3.0] - 2026-04-28
 
 ### Training
