@@ -45,6 +45,64 @@ Each entry follows this template. Copy it (or use `python tools/scraper_bench.py
 
 <!-- Newest entries on top. Append above this line. -->
 
+## curl_cffi_hetzner — 2026-05-05
+
+**Environment:** Hetzner Cloud (Falkenstein, datacenter ASN), `curl_cffi.requests` impersonating `chrome131`. Same code as `curl_cffi_local`; only egress IP differs.
+**URL set:** `tools/fixtures/urls_top200.txt` (252 URLs, identical to all prior runs).
+**Concurrency / per-domain:** 8 / 2.
+
+### Metrics
+- success rate: **172 / 252 = 68.3%** (vs `baseline_hetzner` 39.3% — **+29.0 pp**; vs `curl_cffi_local` 76.6% — **-8.3 pp**).
+- median fetch_ms: 276, p95 1423.
+- median extract_ms: 1184, p95 3806 (Hetzner CPU is slower; extract is the dominant cost on this hardware).
+- outcomes: `ok` 172, `empty_extraction` 36, `http_error` 40, `blocked` 3, `timeout` 1.
+- HTTP status: 200×211, 202×3, 401×3, **403×28**, **429×6**.
+
+### The 2×2 — fingerprint × IP
+
+|                | baseline | curl_cffi | row Δ |
+|----------------|---------:|----------:|------:|
+| **local M1**   |    37.3% | **76.6%** | +39.3 |
+| **Hetzner DC** |    39.3% |     68.3% | +29.0 |
+| **IP Δ**       |  +2.0 pp |  -8.3 pp  |       |
+
+- **Fingerprint is the dominant lever in both IP environments.** +29–39 pp regardless of egress.
+- **IP reputation is real but second-order.** With plain `requests`, the local→DC IP delta is +2 pp (essentially noise). With `curl_cffi`, that same IP delta is -8.3 pp. Once the easy WAF gates are passed, IP becomes the next gate.
+- **The two levers are not independent.** Some hosts gate on (fingerprint AND IP); they only flip to ok when both are clean.
+
+### Hetzner: baseline → curl_cffi (IP constant)
+
+- 76 URLs recovered via fingerprint mimicry alone (no IP change).
+- 3 regressions.
+- Net: +73 URLs.
+
+### local vs Hetzner under curl_cffi (fingerprint constant)
+
+- Same-URL agreement: **87.3%**.
+- 24 URLs work on local-curl_cffi but fail on Hetzner-curl_cffi — **the IP-reputation-bound set:**
+  Bloomberg, Politico, Etsy, Stack Overflow, Reddit, Gap, Old Navy, Kohl's, Petco, Quora, Economist, Axios, The Hill, B&H Photo, Apartment Therapy, GameSpot, Science.org, Smitten Kitchen, Kotaku, DeviantArt, Fodor's, Rome2Rio, TMZ, plus Walmart/Best Buy/Kayak (200-but-empty under DC IP).
+- 3 URLs work on Hetzner-curl_cffi but not on local-curl_cffi — too small to interpret; noise.
+
+### Persistent issues on Hetzner under curl_cffi
+
+- **28 hosts still 403** — superset of the 8 still-403 hosts on local. Adds the IP-bound set above.
+- **6 hosts return 429** (Wayfair, Chewy, imgur, CBS Sports, stackshare, Star Tribune). Same set as `baseline_hetzner`. ASN-rate-limited regardless of fingerprint.
+- **3 `blocked` markers fired** vs 2 locally — Cloudflare interstitials still served to DC IPs even with the right fingerprint.
+
+### Hypothesis tested
+- *Belief:* "curl_cffi handles fingerprint-based gates; IP reputation is a separate, smaller axis."
+- *Result:* Confirmed. The 2×2 cleanly separates the two effects. **Fingerprint is worth ~+29–39 pp; IP is worth ~+8 pp on top of fingerprint** (and ~+2 pp without it). The interaction term is real: IP gating only becomes visible once fingerprint gating is removed.
+
+### Implications for production deployment
+- **Production runs from Hetzner today.** Expected lift after deploying #32 is closer to +29 pp than +39 pp. Still substantial.
+- **The 24-URL IP-bound set is the next frontier.** Three options, ranked by cost:
+  1. **Residential-proxy-on-demand** for the IP-bound host set — egress only those 24 hosts through a proxy, leave everything else on the DC IP. Lowest cost, focused leverage.
+  2. **Run scraping from a residential VPN/co-located link.** Affects all egress, including non-target hosts.
+  3. **Headless browser (Playwright)** for the residual 8 hosts that resist both fingerprint and IP measures.
+- **Don't pursue (3) yet.** It's expensive (browser overhead, infra) and the residual is small. Revisit if those 8 hosts move into production-priority categories.
+
+---
+
 ## curl_cffi_local — 2026-05-05
 
 **Environment:** local M1 Max MacBook. Swapped `requests` → `curl_cffi.requests` impersonating `chrome131`. UA strings, browser headers, timeout, cookie-banner stripping, trafilatura/BS4 extraction all unchanged. One-line behavioral change.
