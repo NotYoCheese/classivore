@@ -173,7 +173,10 @@ def train_model(config, data_dir, output_dir=None, device=None,
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Training arguments
+    # Training arguments. use_cpu honors device="cpu" overrides on Macs;
+    # without it HF Trainer auto-selects MPS for the model while our
+    # class_weights/loss_fn stay on CPU, producing a device-mismatch error
+    # at the first forward pass.
     training_args = TrainingArguments(
         output_dir=str(output_dir / "checkpoints"),
         num_train_epochs=num_epochs,
@@ -181,6 +184,7 @@ def train_model(config, data_dir, output_dir=None, device=None,
         per_device_eval_batch_size=bs * 2,
         learning_rate=lr,
         fp16=use_fp16,
+        use_cpu=(device_name == "cpu"),
         eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,

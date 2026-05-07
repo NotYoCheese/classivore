@@ -53,22 +53,22 @@ class TaxonomyConfig:
         self.taxonomy_dir = config_path.parent
 
         with open(config_path, "r") as f:
-            self._raw = yaml.safe_load(f)
+            self._raw = yaml.safe_load(f) or {}
 
         # Identity
-        self.name: str = self._raw["name"]
-        self.version: str = self._raw["version"]
-        self.slug: str = self._raw["slug"]
+        self.name: str = self._required("name")
+        self.version: str = self._required("version")
+        self.slug: str = self._required("slug")
 
         # File paths (relative to taxonomy dir)
-        self.taxonomy_file: Path = self.taxonomy_dir / self._raw["taxonomy_file"]
+        self.taxonomy_file: Path = self.taxonomy_dir / self._required("taxonomy_file")
         self.enriched_file: Optional[Path] = None
         if self._raw.get("enriched_file"):
             self.enriched_file = self.taxonomy_dir / self._raw["enriched_file"]
 
         # Column mapping
-        self.id_column: str = self._raw["id_column"]
-        self.name_column: str = self._raw["name_column"]
+        self.id_column: str = self._required("id_column")
+        self.name_column: str = self._required("name_column")
         self.parent_column: str = self._raw.get("parent_column", "parent_id")
         self.description_column: Optional[str] = self._raw.get("description_column")
 
@@ -157,6 +157,19 @@ class TaxonomyConfig:
         # Collection hints
         self.domain_hints: dict = self._raw.get("domain_hints", {})
         self.excluded_categories: list = self._raw.get("excluded_categories", [])
+
+    def _required(self, key: str):
+        """Read a required field from the loaded YAML.
+
+        The path of the file being loaded is included in the error so the
+        operator knows which config.yaml is malformed without having to
+        cross-reference the slug, which itself may be the missing field.
+        """
+        if key not in self._raw:
+            raise ValueError(
+                f"{self.config_path} missing required field {key!r}"
+            )
+        return self._raw[key]
 
     def get_target(self, difficulty: str) -> int:
         """Get collection target for a difficulty level."""
