@@ -3,8 +3,9 @@
 
 Purpose: produce comparable, reproducible signal about how well the current
 scraper fetches and extracts text from real URLs. Used to evaluate proposed
-improvements (UA rotation, residential proxies, curl_cffi, etc.) before
-spending engineering time on integration.
+scraper improvements across environments (network conditions, transport
+options, header strategies, etc.) before spending engineering time on
+integration.
 
 The bench is a *research instrument*. It is read-only against the production
 DomainTracker and writes one JSONL record per URL to `tools/results/`.

@@ -28,32 +28,46 @@ REQUEST_TIMEOUT = 20
 IMPERSONATE = "chrome131"
 
 
-def _fetch_response(url):
+def _fetch_response(url, session=None):
     """Issue the GET request with a real browser TLS fingerprint.
 
-    Uses curl_cffi to impersonate Chrome 131 — TLS handshake, HTTP/2
-    settings, header order, and the full default Chrome header set all
-    match a real browser, which gets us past Akamai/Cloudflare WAFs that
-    fingerprint plain `requests`.
+    When `session` is None, uses module-level curl_cffi.requests to impersonate
+    Chrome 131 — TLS handshake, HTTP/2 settings, header order, and the full
+    default Chrome header set all match a real browser, which gets us past
+    Akamai/Cloudflare WAFs that fingerprint plain `requests`.
+
+    When `session` is provided, the caller owns the transport. We do not pass
+    `impersonate=` because not every Session implementation accepts it; the
+    caller is expected to have configured fingerprinting (and proxies, retries,
+    timeouts, adapters, pooling) on the session itself.
 
     Returns the raw `requests.Response` so callers (the bench, primarily)
     can inspect status codes, headers, and body length on non-200s. The
     public `fetch_page` wraps this and returns just the HTML string.
     """
+    if session is not None:
+        return session.get(url, timeout=REQUEST_TIMEOUT)
     return requests.get(url, timeout=REQUEST_TIMEOUT, impersonate=IMPERSONATE)
 
 
-def fetch_page(url):
+def fetch_page(url, session=None):
     """Download a page and return raw HTML.
 
     Args:
         url: URL to fetch.
+        session: Optional pre-configured HTTP session (e.g. `requests.Session`
+            or `curl_cffi.requests.Session`). When provided, the caller owns
+            all HTTP behavior — proxies, retries, timeouts, connection pooling,
+            custom adapters, and TLS fingerprinting. This library does not
+            apply its own impersonation profile to caller-provided sessions.
+            When None (default), uses module-level `curl_cffi.requests` with
+            Chrome 131 impersonation.
 
     Returns:
         HTML string, or None on failure or non-HTML response.
     """
     try:
-        resp = _fetch_response(url)
+        resp = _fetch_response(url, session=session)
     except Exception as e:
         logger.warning("fetch_failed", url=url, error=str(e))
         return None
