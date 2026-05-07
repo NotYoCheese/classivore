@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Collection
 
+- `fetch_page` now accepts an optional `session` parameter for caller-controlled
+  HTTP behavior (proxies, retries, timeouts, connection pooling, custom
+  adapters, TLS fingerprinting). When `session=None` (default), behavior is
+  unchanged — module-level `curl_cffi.requests` with Chrome 131 impersonation.
+  Proxy management has moved out of this library: classivore exposes scraping
+  primitives, the operator (e.g. `classivore-api`) configures the transport.
 - Replace `requests` with `curl_cffi` impersonating Chrome 131 in the live
   scraper. TLS handshake, HTTP/2 settings, and header order now match a real
   browser, getting us past Akamai/Cloudflare WAFs that fingerprint plain
@@ -43,8 +49,8 @@ All notable changes to this project will be documented in this file.
 ### Tools
 
 - Add `tools/scraper_bench.py` — a live-scrape benchmark for evaluating
-  scraper improvements (UA rotation, residential proxies, curl_cffi, etc.)
-  against a frozen 200-URL fixture. Emits one JSONL record per URL with
+  scraper improvements across environments (transport options, header
+  strategies, network conditions, etc.) against a frozen 200-URL fixture. Emits one JSONL record per URL with
   outcome, timings, block markers, and a `would_have_used_exa` flag so
   runs can be sliced and compared on the `--label` field. Read-only
   against `DomainTracker` (it never calls `record_result()` or `save()`).

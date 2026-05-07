@@ -67,4 +67,5 @@ Auto-discovers most recent model in `models/{slug}/` if `--model-dir` not specif
 
 ## Tests
 
+- `tests/unit/test_inference_classifier.py` — Classifier loading, chunking, threshold application, aggregation modes, taxonomy metadata handling
 - `tests/unit/test_cli.py` — CLI classify routing with mocked Classifier

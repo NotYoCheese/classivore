@@ -241,6 +241,8 @@ The +39 pp curl_cffi win held *despite* these mismatches. Cleaning them up is it
   3. **Headless browser (Playwright)** for the residual 8 hosts that resist both fingerprint and IP measures.
 - **Don't pursue (3) yet.** It's expensive (browser overhead, infra) and the residual is small. Revisit if those 8 hosts move into production-priority categories.
 
+> **Forward note (2026-05-06):** Direction (1) and (2) — proxy management — moved out of this library to `classivore-api`. The library now exposes scraping primitives only; `fetch_page` accepts an injected `requests.Session` so callers control proxies, retries, timeouts, and transport. See `classivore-api` for the proxy-routing implementation. (3) Playwright remains an open question for this library.
+
 ---
 
 ## curl_cffi_local — 2026-05-05

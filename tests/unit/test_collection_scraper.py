@@ -126,3 +126,42 @@ class TestFetchPage:
 
     def test_impersonation_profile_set(self):
         assert IMPERSONATE == "chrome131"
+
+    @patch("classivore.collection.scraper.requests.get")
+    def test_injected_session_used_instead_of_module_requests(self, mock_module_get):
+        """Caller-provided session is the seam for proxies/retries/transport.
+
+        When session is passed, module-level curl_cffi.requests must NOT be
+        called — the caller owns all HTTP behavior.
+        """
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = SAMPLE_HTML
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_session.get.return_value = mock_resp
+
+        html = fetch_page("https://example.com/article", session=mock_session)
+
+        assert html == SAMPLE_HTML
+        mock_session.get.assert_called_once()
+        mock_module_get.assert_not_called()
+        # Caller owns impersonation/headers — library must not inject them
+        kwargs = mock_session.get.call_args.kwargs
+        assert "impersonate" not in kwargs
+        assert "headers" not in kwargs
+
+    @patch("classivore.collection.scraper.requests.get")
+    def test_default_session_none_uses_module_requests(self, mock_module_get):
+        """Default behavior (session=None) must remain unchanged."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = SAMPLE_HTML
+        mock_resp.headers = {"content-type": "text/html"}
+        mock_module_get.return_value = mock_resp
+
+        fetch_page("https://example.com/article")
+
+        mock_module_get.assert_called_once()
+        kwargs = mock_module_get.call_args.kwargs
+        assert kwargs.get("impersonate") == IMPERSONATE
