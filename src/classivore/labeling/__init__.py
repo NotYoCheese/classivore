@@ -29,7 +29,7 @@ from classivore.labeling.prompts import (
 )
 from classivore.labeling.state import LabelState
 from classivore.logging_config import get_logger
-from classivore.persistence import iter_ndjson, load_ndjson
+from classivore.persistence import atomic_writer, iter_ndjson, load_ndjson
 
 logger = get_logger(__name__)
 
@@ -276,7 +276,7 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
 
         # Parse and apply (save raw results inline)
         raw_path = labels_dir / f"stage1_raw_{batch_id}.jsonl"
-        with open(raw_path, "w") as raw_file:
+        with atomic_writer(raw_path) as raw_file:
             for custom_id, message in iter_succeeded_results(client, batch_id):
                 _save_raw_line(raw_file, custom_id, message)
                 content_hash = custom_id.removeprefix("s1-")
@@ -385,7 +385,7 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
         poll_until_complete(client, batch_id, poll_interval=poll_interval)
 
         raw_path = labels_dir / f"stage2_raw_{batch_id}.jsonl"
-        with open(raw_path, "w") as raw_file:
+        with atomic_writer(raw_path) as raw_file:
             for custom_id, message in iter_succeeded_results(client, batch_id):
                 _save_raw_line(raw_file, custom_id, message)
                 content_hash = custom_id.removeprefix("s2-")
@@ -494,7 +494,7 @@ def _write_labels(state, labels_dir):
     """Write final labels as NDJSON for collection seeding."""
     output_path = labels_dir / "labels.json"
     count = 0
-    with open(output_path, "w") as f:
+    with atomic_writer(output_path) as f:
         for content_hash, page in state.pages.items():
             if page["status"] != "stage2_complete":
                 continue
