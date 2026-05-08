@@ -4,6 +4,60 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-08
+
+### Reliability
+
+- `batch.submit_batch` retries 3× with exponential backoff (1s, 2s, 4s)
+  on `APIConnectionError`, `RateLimitError`, and 5xx `APIStatusError`.
+  4xx other than 429 propagate immediately. Previously a single transient
+  failure on submit would abort a long enrichment run.
+- `batch.poll_until_complete` now bounds wall-clock time at 24h via
+  `time.monotonic()` and raises `BatchPollTimeoutError(batch_id,
+  elapsed_seconds)` referencing `label_state.json` for resume. Replaces
+  the unbounded poll loop that could hang forever on a stuck batch.
+- `TaxonomyConfig` validates required fields at load time
+  (`name`, `version`, `slug`, `taxonomy_file`, `id_column`, `name_column`)
+  and raises `ValueError` naming the offending config path and missing
+  field. Catches typos in `taxonomies/*/config.yaml` before they crash
+  mid-run.
+- Atomic JSON writes across `training/` and `labeling/` via
+  `persistence.atomic_json_save` and the new `persistence.atomic_writer`
+  context manager. Partial files can no longer corrupt artifacts on
+  crash mid-write (label state, training reports, threshold files,
+  taxonomy metadata).
+
+### CLI
+
+- Drop the unimplemented `classivore serve` command. Was a stub that
+  printed a TODO; the API server lives in the `classivore-api` companion
+  repo.
+- Fix `classivore enrich --review` to actually accept input. Previously
+  printed each enrichment without prompting, making the flag a no-op.
+- Split `cli/main.py` (1230 → 549 lines) by extracting classify, init,
+  taxonomy, enrich, agent, and hints into `cli/runners/`. Heavy imports
+  (torch, transformers) stay deferred per command. No user-visible
+  surface change.
+- Consolidate 11 copies of the "load enriched taxonomy if exists"
+  pattern into `taxonomy.loader.apply_enriched_if_present` and
+  `enriched_taxonomy_path` helpers.
+
+### Training
+
+- `train_model` now passes `use_cpu=(device == "cpu")` to
+  `TrainingArguments` so `device="cpu"` is honored on Macs. Without it,
+  HF Trainer auto-selected MPS for the model while `class_weights` and
+  `loss_fn` stayed on CPU, breaking the first forward pass.
+
+### Tests
+
+- New `tests/unit/test_trainer.py` runs `train_model` on a 50-row toy
+  taxonomy with `deberta-v3-xsmall`, asserting the full inference
+  artifact set lands on disk. Skips cleanly when the model is uncached
+  and offline.
+- New `tests/unit/test_batch.py` covers the retry and timeout paths
+  added to `batch.submit_batch` and `batch.poll_until_complete`.
+
 ### Collection
 
 - `fetch_page` now accepts an optional `session` parameter for caller-controlled
