@@ -37,3 +37,7 @@ htmlcov/
 *.log
 infra/
 taxonomies/
+
+# Bench results (kept locally, only .gitkeep is tracked)
+tools/results/*
+!tools/results/.gitkeep

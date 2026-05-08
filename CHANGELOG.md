@@ -2,6 +2,119 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [1.4.0] - 2026-05-08
+
+### Reliability
+
+- `batch.submit_batch` retries 3× with exponential backoff (1s, 2s, 4s)
+  on `APIConnectionError`, `RateLimitError`, and 5xx `APIStatusError`.
+  4xx other than 429 propagate immediately. Previously a single transient
+  failure on submit would abort a long enrichment run.
+- `batch.poll_until_complete` now bounds wall-clock time at 24h via
+  `time.monotonic()` and raises `BatchPollTimeoutError(batch_id,
+  elapsed_seconds)` referencing `label_state.json` for resume. Replaces
+  the unbounded poll loop that could hang forever on a stuck batch.
+- `TaxonomyConfig` validates required fields at load time
+  (`name`, `version`, `slug`, `taxonomy_file`, `id_column`, `name_column`)
+  and raises `ValueError` naming the offending config path and missing
+  field. Catches typos in `taxonomies/*/config.yaml` before they crash
+  mid-run.
+- Atomic JSON writes across `training/` and `labeling/` via
+  `persistence.atomic_json_save` and the new `persistence.atomic_writer`
+  context manager. Partial files can no longer corrupt artifacts on
+  crash mid-write (label state, training reports, threshold files,
+  taxonomy metadata).
+
+### CLI
+
+- Drop the unimplemented `classivore serve` command. Was a stub that
+  printed a TODO; the API server lives in the `classivore-api` companion
+  repo.
+- Fix `classivore enrich --review` to actually accept input. Previously
+  printed each enrichment without prompting, making the flag a no-op.
+- Split `cli/main.py` (1230 → 549 lines) by extracting classify, init,
+  taxonomy, enrich, agent, and hints into `cli/runners/`. Heavy imports
+  (torch, transformers) stay deferred per command. No user-visible
+  surface change.
+- Consolidate 11 copies of the "load enriched taxonomy if exists"
+  pattern into `taxonomy.loader.apply_enriched_if_present` and
+  `enriched_taxonomy_path` helpers.
+
+### Training
+
+- `train_model` now passes `use_cpu=(device == "cpu")` to
+  `TrainingArguments` so `device="cpu"` is honored on Macs. Without it,
+  HF Trainer auto-selected MPS for the model while `class_weights` and
+  `loss_fn` stayed on CPU, breaking the first forward pass.
+
+### Tests
+
+- New `tests/unit/test_trainer.py` runs `train_model` on a 50-row toy
+  taxonomy with `deberta-v3-xsmall`, asserting the full inference
+  artifact set lands on disk. Skips cleanly when the model is uncached
+  and offline.
+- New `tests/unit/test_batch.py` covers the retry and timeout paths
+  added to `batch.submit_batch` and `batch.poll_until_complete`.
+
+### Collection
+
+- `fetch_page` now accepts an optional `session` parameter for caller-controlled
+  HTTP behavior (proxies, retries, timeouts, connection pooling, custom
+  adapters, TLS fingerprinting). When `session=None` (default), behavior is
+  unchanged — module-level `curl_cffi.requests` with Chrome 131 impersonation.
+  Proxy management has moved out of this library: classivore exposes scraping
+  primitives, the operator (e.g. `classivore-api`) configures the transport.
+- Replace `requests` with `curl_cffi` impersonating Chrome 131 in the live
+  scraper. TLS handshake, HTTP/2 settings, and header order now match a real
+  browser, getting us past Akamai/Cloudflare WAFs that fingerprint plain
+  `requests`. Bench measured **+39.3 pp** live-scrape success on a frozen
+  252-URL fixture (37.3% → 76.6%); 31 of 39 previously-403 hosts recovered.
+  See `docs/scraper-notebook.md` for the full diff. New dependency:
+  `curl_cffi>=0.7.0`.
+- Drop the manual `BROWSER_HEADERS` dict and `USER_AGENTS` rotation from
+  `scraper.py`. Both pre-dated the curl_cffi swap and were overriding
+  curl_cffi's auto-injected Chrome 131 header set — including replacing the
+  matching macOS UA with Linux/Windows strings on 2/3 of requests, which
+  WAFs cross-check against the macOS-shaped TLS handshake. Bench: **+1.6 pp**
+  local (76.6% → 78.2%) and **+2.3 pp** Hetzner (68.3% → 70.6%); 403s
+  drop 8→3 local and 28→24 Hetzner. Recovers etsy, inc.com, barrons on
+  both machines plus hm/reddit/threads/thekitchn locally and
+  walmart/kohls/sportingnews/smittenkitchen on Hetzner.
+
+### Labeling
+
+- Add `--limit N` flag to `classivore label` for cost-bounded sampling. Caps
+  each stage at N pages this run; subsequent runs naturally pick up where
+  the previous run left off via the existing label state. Useful for
+  baselining cost on a subset before committing to the full corpus, or for
+  spreading a large labeling job across multiple smaller batches.
+
+### Taxonomy
+
+- Fix `classivore init` to compute `path`, `depth`, `is_leaf`, and
+  `children_count` from the `parent_id` graph and write a normalized
+  `taxonomy.csv`. Previously `init` did `shutil.copy2` of the input CSV
+  verbatim, so taxonomies onboarded from a raw three-column source (id,
+  parent_id, name) ended up with every category looking like a depth-1
+  leaf to the loader, breaking enrichment, collection, and training.
+
+### Tools
+
+- Add `tools/scraper_bench.py` — a live-scrape benchmark for evaluating
+  scraper improvements across environments (transport options, header
+  strategies, network conditions, etc.) against a frozen 200-URL fixture. Emits one JSONL record per URL with
+  outcome, timings, block markers, and a `would_have_used_exa` flag so
+  runs can be sliced and compared on the `--label` field. Read-only
+  against `DomainTracker` (it never calls `record_result()` or `save()`).
+- Add `docs/scraper-notebook.md` — append-only research log so failed
+  experiments stay documented and don't get re-investigated.
+- Refactor `scraper.fetch_page` to delegate the actual HTTP call to a new
+  `_fetch_response(url)` helper. The bench reuses the helper to inspect
+  status codes, content-type, and response bodies on non-200s while
+  keeping `fetch_page`'s public behavior identical.
+
 ## [1.3.0] - 2026-04-28
 
 ### Training

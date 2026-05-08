@@ -113,6 +113,74 @@ def validate_csv(csv_path, id_col="id", name_col="name", parent_col="parent_id")
     }
 
 
+def normalize_taxonomy_csv(input_csv, output_csv,
+                           id_col="id", name_col="name", parent_col="parent_id"):
+    """Read a raw taxonomy CSV and write a normalized CSV with hierarchy columns.
+
+    Computes ``path``, ``depth``, ``is_leaf``, and ``children_count`` from the
+    ``parent_id`` graph so the loader and downstream code see a consistent
+    hierarchy regardless of what columns the source CSV provides. Preserves any
+    additional columns present in the input.
+
+    Args:
+        input_csv: Path to the source CSV.
+        output_csv: Path to write the normalized CSV.
+        id_col: ID column name in the input.
+        name_col: Name column name in the input.
+        parent_col: Parent column name in the input.
+    """
+    input_csv = Path(input_csv)
+    output_csv = Path(output_csv)
+
+    with open(input_csv, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        source_fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    by_id = {r[id_col]: r for r in rows}
+    children_map = defaultdict(list)
+    for r in rows:
+        children_map[r[parent_col]].append(r[id_col])
+
+    path_cache = {}
+
+    def _path(cat_id):
+        if cat_id in path_cache:
+            return path_cache[cat_id]
+        row = by_id[cat_id]
+        pid = row[parent_col]
+        if pid and pid in by_id:
+            parent_path = _path(pid)
+            path_cache[cat_id] = parent_path + [row[name_col]]
+        else:
+            path_cache[cat_id] = [row[name_col]]
+        return path_cache[cat_id]
+
+    for r in rows:
+        _path(r[id_col])
+
+    extra_cols = ["display_name", "path", "depth", "is_leaf", "children_count"]
+    fieldnames = list(source_fieldnames)
+    for col in extra_cols:
+        if col not in fieldnames:
+            fieldnames.append(col)
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            cat_id = r[id_col]
+            path = path_cache[cat_id]
+            row_out = dict(r)
+            row_out.setdefault("display_name", r[name_col])
+            row_out["path"] = " > ".join(path)
+            row_out["depth"] = len(path)
+            row_out["is_leaf"] = str(not children_map.get(cat_id))
+            row_out["children_count"] = len(children_map.get(cat_id, []))
+            writer.writerow(row_out)
+
+
 def generate_default_config(slug, name, version, taxonomy_file,
                             id_col="id", name_col="name", parent_col="parent_id"):
     """Generate a default config dict for a new taxonomy.

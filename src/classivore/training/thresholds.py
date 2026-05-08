@@ -14,6 +14,7 @@ from sklearn.metrics import f1_score
 
 from classivore.config.defaults import MIN_SAMPLES_FOR_OPTIMIZATION
 from classivore.logging_config import get_logger
+from classivore.persistence import atomic_json_save
 
 logger = get_logger(__name__)
 
@@ -104,8 +105,7 @@ def save_thresholds(thresholds, output_dir):
         output_dir: Model output directory.
     """
     path = Path(output_dir) / "per_category_thresholds.json"
-    with open(path, "w") as f:
-        json.dump(thresholds, f, indent=2)
+    atomic_json_save(thresholds, path)
     logger.info("thresholds_saved", path=str(path), count=len(thresholds))
 
 

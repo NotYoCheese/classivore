@@ -29,7 +29,7 @@ from classivore.labeling.prompts import (
 )
 from classivore.labeling.state import LabelState
 from classivore.logging_config import get_logger
-from classivore.persistence import iter_ndjson, load_ndjson
+from classivore.persistence import atomic_writer, iter_ndjson, load_ndjson
 
 logger = get_logger(__name__)
 
@@ -97,7 +97,7 @@ def _finalize_usage(totals):
 
 
 def run_labeling(config, categories, hierarchy, data_dir, stage="all",
-                 dry_run=False, poll_interval=30, verbose=False):
+                 dry_run=False, poll_interval=30, verbose=False, limit=None):
     """Run the two-stage labeling pipeline.
 
     Args:
@@ -109,6 +109,9 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
         dry_run: If True, show what would be labeled without API calls.
         poll_interval: Seconds between batch status polls.
         verbose: Enable verbose logging.
+        limit: If set, cap each stage at this many pages this run. Used for
+            cost-bounded sampling — subsequent runs naturally pick up where
+            the previous run left off via state.
 
     Returns:
         Summary dict with labeling statistics.
@@ -152,6 +155,8 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
         print(f"Content categories: {len(content_categories)} (across {len(tier1_categories)} tier-1)")
         print(f"Needing stage 1: {needing_s1}")
         print(f"Needing stage 2: {needing_s2}")
+        if limit:
+            print(f"Limit: {limit} pages per stage this run")
         print(f"Model: {config.labeling_model}")
         print("Dry run — no API calls made.")
         return label_state.summary()
@@ -172,14 +177,14 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
         if stage in ("all", "1"):
             stage1_usage = _run_stage1(
                 client, label_state, page_lookup, tier1_categories,
-                config, labels_dir, poll_interval, funnel,
+                config, labels_dir, poll_interval, funnel, limit=limit,
             )
 
         # Stage 2
         if stage in ("all", "2"):
             stage2_usage = _run_stage2(
                 client, label_state, page_lookup, content_categories,
-                config, labels_dir, poll_interval, funnel,
+                config, labels_dir, poll_interval, funnel, limit=limit,
             )
     except Exception as e:
         error_info = {
@@ -212,13 +217,15 @@ def run_labeling(config, categories, hierarchy, data_dir, stage="all",
     return summary
 
 
-def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir, poll_interval, funnel):
+def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir, poll_interval, funnel, limit=None):
     """Run stage 1: tier-1 triage. Returns aggregated usage stats dict.
 
     Mutates `funnel` with stage1_sent / tier1_hits counters.
     """
     usage_totals = _empty_usage_totals()
     needing = state.pages_needing_stage1()
+    if limit:
+        needing = needing[:limit]
     if not needing:
         logger.info("stage1_all_triaged")
         return _finalize_usage(usage_totals)
@@ -269,7 +276,7 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
 
         # Parse and apply (save raw results inline)
         raw_path = labels_dir / f"stage1_raw_{batch_id}.jsonl"
-        with open(raw_path, "w") as raw_file:
+        with atomic_writer(raw_path) as raw_file:
             for custom_id, message in iter_succeeded_results(client, batch_id):
                 _save_raw_line(raw_file, custom_id, message)
                 content_hash = custom_id.removeprefix("s1-")
@@ -300,13 +307,15 @@ def _run_stage1(client, state, page_lookup, tier1_categories, config, labels_dir
     return _finalize_usage(usage_totals)
 
 
-def _run_stage2(client, state, page_lookup, content_categories, config, labels_dir, poll_interval, funnel):
+def _run_stage2(client, state, page_lookup, content_categories, config, labels_dir, poll_interval, funnel, limit=None):
     """Run stage 2: subtree classification. Returns aggregated usage stats dict.
 
     Mutates `funnel` with stage2_sent / labels_emitted / errors counters.
     """
     usage_totals = _empty_usage_totals()
     needing = state.pages_needing_stage2()
+    if limit:
+        needing = needing[:limit]
     if not needing:
         logger.info("stage2_all_classified")
         return _finalize_usage(usage_totals)
@@ -376,7 +385,7 @@ def _run_stage2(client, state, page_lookup, content_categories, config, labels_d
         poll_until_complete(client, batch_id, poll_interval=poll_interval)
 
         raw_path = labels_dir / f"stage2_raw_{batch_id}.jsonl"
-        with open(raw_path, "w") as raw_file:
+        with atomic_writer(raw_path) as raw_file:
             for custom_id, message in iter_succeeded_results(client, batch_id):
                 _save_raw_line(raw_file, custom_id, message)
                 content_hash = custom_id.removeprefix("s2-")
@@ -485,7 +494,7 @@ def _write_labels(state, labels_dir):
     """Write final labels as NDJSON for collection seeding."""
     output_path = labels_dir / "labels.json"
     count = 0
-    with open(output_path, "w") as f:
+    with atomic_writer(output_path) as f:
         for content_hash, page in state.pages.items():
             if page["status"] != "stage2_complete":
                 continue

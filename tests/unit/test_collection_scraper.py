@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from classivore.collection.scraper import (
-    USER_AGENTS,
+    IMPERSONATE,
     extract_text,
     fetch_page,
 )
@@ -86,7 +86,7 @@ class TestFetchPage:
         assert html == SAMPLE_HTML
 
     @patch("classivore.collection.scraper.requests.get")
-    def test_sets_user_agent(self, mock_get):
+    def test_uses_impersonation(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.text = "<html></html>"
@@ -94,8 +94,9 @@ class TestFetchPage:
         mock_get.return_value = mock_resp
 
         fetch_page("https://example.com/article")
-        headers = mock_get.call_args.kwargs.get("headers", {})
-        assert headers.get("User-Agent") in USER_AGENTS
+        kwargs = mock_get.call_args.kwargs
+        assert kwargs.get("impersonate") == IMPERSONATE
+        assert "headers" not in kwargs or not kwargs.get("headers")
 
     @patch("classivore.collection.scraper.requests.get")
     def test_returns_none_on_non_200(self, mock_get):
@@ -123,5 +124,44 @@ class TestFetchPage:
         result = fetch_page("https://example.com/down")
         assert result is None
 
-    def test_multiple_user_agents(self):
-        assert len(USER_AGENTS) >= 3
+    def test_impersonation_profile_set(self):
+        assert IMPERSONATE == "chrome131"
+
+    @patch("classivore.collection.scraper.requests.get")
+    def test_injected_session_used_instead_of_module_requests(self, mock_module_get):
+        """Caller-provided session is the seam for proxies/retries/transport.
+
+        When session is passed, module-level curl_cffi.requests must NOT be
+        called — the caller owns all HTTP behavior.
+        """
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = SAMPLE_HTML
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_session.get.return_value = mock_resp
+
+        html = fetch_page("https://example.com/article", session=mock_session)
+
+        assert html == SAMPLE_HTML
+        mock_session.get.assert_called_once()
+        mock_module_get.assert_not_called()
+        # Caller owns impersonation/headers — library must not inject them
+        kwargs = mock_session.get.call_args.kwargs
+        assert "impersonate" not in kwargs
+        assert "headers" not in kwargs
+
+    @patch("classivore.collection.scraper.requests.get")
+    def test_default_session_none_uses_module_requests(self, mock_module_get):
+        """Default behavior (session=None) must remain unchanged."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = SAMPLE_HTML
+        mock_resp.headers = {"content-type": "text/html"}
+        mock_module_get.return_value = mock_resp
+
+        fetch_page("https://example.com/article")
+
+        mock_module_get.assert_called_once()
+        kwargs = mock_module_get.call_args.kwargs
+        assert kwargs.get("impersonate") == IMPERSONATE

@@ -5,12 +5,16 @@ Downloads pages via HTTP, strips cookie banners from HTML before extraction,
 then extracts article text using trafilatura (precision mode). Falls back to
 BeautifulSoup paragraph extraction when trafilatura returns nothing.
 
+HTTP fetches go through `curl_cffi` impersonating Chrome 131 — TLS handshake,
+HTTP/2 settings, header order, User-Agent, and the full Sec-Ch-Ua / Sec-Fetch
+family are all set by the impersonation profile to match a real Chrome 131 on
+macOS. We pass no headers ourselves: any override risks introducing a TLS-vs-UA
+or header-order mismatch that WAFs cross-check as a bot tell.
+
 Rate limiting is handled by the orchestrator, not here.
 """
 
-import random
-
-import requests
+from curl_cffi import requests
 import trafilatura
 from bs4 import BeautifulSoup
 
@@ -19,45 +23,51 @@ from classivore.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-]
-
-# Browser-like headers to avoid WAF/CDN bot detection
-BROWSER_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "DNT": "1",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-}
-
 REQUEST_TIMEOUT = 20
 
+IMPERSONATE = "chrome131"
 
-def fetch_page(url):
+
+def _fetch_response(url, session=None):
+    """Issue the GET request with a real browser TLS fingerprint.
+
+    When `session` is None, uses module-level curl_cffi.requests to impersonate
+    Chrome 131 — TLS handshake, HTTP/2 settings, header order, and the full
+    default Chrome header set all match a real browser, which gets us past
+    Akamai/Cloudflare WAFs that fingerprint plain `requests`.
+
+    When `session` is provided, the caller owns the transport. We do not pass
+    `impersonate=` because not every Session implementation accepts it; the
+    caller is expected to have configured fingerprinting (and proxies, retries,
+    timeouts, adapters, pooling) on the session itself.
+
+    Returns the raw `requests.Response` so callers (the bench, primarily)
+    can inspect status codes, headers, and body length on non-200s. The
+    public `fetch_page` wraps this and returns just the HTML string.
+    """
+    if session is not None:
+        return session.get(url, timeout=REQUEST_TIMEOUT)
+    return requests.get(url, timeout=REQUEST_TIMEOUT, impersonate=IMPERSONATE)
+
+
+def fetch_page(url, session=None):
     """Download a page and return raw HTML.
 
     Args:
         url: URL to fetch.
+        session: Optional pre-configured HTTP session (e.g. `requests.Session`
+            or `curl_cffi.requests.Session`). When provided, the caller owns
+            all HTTP behavior — proxies, retries, timeouts, connection pooling,
+            custom adapters, and TLS fingerprinting. This library does not
+            apply its own impersonation profile to caller-provided sessions.
+            When None (default), uses module-level `curl_cffi.requests` with
+            Chrome 131 impersonation.
 
     Returns:
         HTML string, or None on failure or non-HTML response.
     """
-    headers = {**BROWSER_HEADERS, "User-Agent": random.choice(USER_AGENTS)}
     try:
-        resp = requests.get(
-            url,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT,
-        )
+        resp = _fetch_response(url, session=session)
     except Exception as e:
         logger.warning("fetch_failed", url=url, error=str(e))
         return None

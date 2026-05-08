@@ -32,6 +32,7 @@ from sklearn.metrics import (
 
 from classivore.config.defaults import MIN_SAMPLES_FOR_OPTIMIZATION
 from classivore.logging_config import get_logger
+from classivore.persistence import atomic_json_save
 
 logger = get_logger(__name__)
 
@@ -331,8 +332,7 @@ def save_quality_report(report, output_dir):
         output_dir: Model output directory.
     """
     path = Path(output_dir) / "quality_report.json"
-    with open(path, "w") as f:
-        json.dump(report, f, indent=2)
+    atomic_json_save(report, path)
     logger.info("quality_report_saved", path=str(path))
 
 

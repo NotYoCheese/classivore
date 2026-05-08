@@ -3,9 +3,12 @@
 
 from unittest.mock import MagicMock, patch
 
+import anthropic
+import httpx
 import pytest
 
 from classivore.batch import (
+    BatchPollTimeoutError,
     aggregate_batch_usage,
     get_api_client,
     iter_succeeded_results,
@@ -53,6 +56,22 @@ class TestGetApiClient:
             get_api_client()
 
 
+def _api_status_error(status_code):
+    """Build an anthropic.APIStatusError with the given HTTP status."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages/batches")
+    response = httpx.Response(status_code=status_code, request=request)
+    return anthropic.APIStatusError(
+        message=f"HTTP {status_code}",
+        response=response,
+        body={"error": {"message": "boom"}},
+    )
+
+
+def _api_connection_error():
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages/batches")
+    return anthropic.APIConnectionError(request=request)
+
+
 class TestSubmitBatch:
     def test_submits_requests(self):
         client = MagicMock()
@@ -70,6 +89,59 @@ class TestSubmitBatch:
 
         assert batch_id is None
         client.messages.batches.create.assert_not_called()
+
+    @patch("classivore.batch.time.sleep")
+    def test_retries_on_connection_error_then_succeeds(self, mock_sleep):
+        client = MagicMock()
+        client.messages.batches.create.side_effect = [
+            _api_connection_error(),
+            MagicMock(id="batch-123"),
+        ]
+
+        batch_id = submit_batch(client, [{"custom_id": "x", "params": {}}])
+
+        assert batch_id == "batch-123"
+        assert client.messages.batches.create.call_count == 2
+        mock_sleep.assert_called_once_with(1)
+
+    @patch("classivore.batch.time.sleep")
+    def test_retries_with_exponential_backoff(self, mock_sleep):
+        client = MagicMock()
+        client.messages.batches.create.side_effect = [
+            _api_status_error(503),
+            _api_status_error(503),
+            _api_status_error(503),
+            MagicMock(id="batch-ok"),
+        ]
+
+        batch_id = submit_batch(client, [{"custom_id": "x", "params": {}}])
+
+        assert batch_id == "batch-ok"
+        assert client.messages.batches.create.call_count == 4
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [1, 2, 4]
+
+    @patch("classivore.batch.time.sleep")
+    def test_does_not_retry_on_4xx_other_than_429(self, mock_sleep):
+        client = MagicMock()
+        client.messages.batches.create.side_effect = _api_status_error(400)
+
+        with pytest.raises(anthropic.APIStatusError):
+            submit_batch(client, [{"custom_id": "x", "params": {}}])
+
+        assert client.messages.batches.create.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("classivore.batch.time.sleep")
+    def test_gives_up_after_exhausting_retries(self, mock_sleep):
+        client = MagicMock()
+        client.messages.batches.create.side_effect = _api_connection_error()
+
+        with pytest.raises(anthropic.APIConnectionError):
+            submit_batch(client, [{"custom_id": "x", "params": {}}])
+
+        # 1 initial + 3 retries = 4 total attempts.
+        assert client.messages.batches.create.call_count == 4
+        assert mock_sleep.call_count == 3
 
 
 class TestPollUntilComplete:
@@ -109,6 +181,35 @@ class TestPollUntilComplete:
 
         assert result.processing_status == "ended"
         mock_sleep.assert_not_called()
+
+    @patch("classivore.batch.time.monotonic")
+    @patch("classivore.batch.time.sleep")
+    def test_raises_timeout_after_max_wait(self, mock_sleep, mock_monotonic):
+        client = MagicMock()
+
+        in_progress = MagicMock()
+        in_progress.processing_status = "in_progress"
+        in_progress.request_counts = MagicMock(succeeded=0, processing=5, errored=0)
+        client.messages.batches.retrieve.return_value = in_progress
+
+        # First call sets the deadline; later calls advance the clock past it.
+        mock_monotonic.side_effect = [0.0, 50.0, 200.0, 200.0]
+
+        with pytest.raises(BatchPollTimeoutError) as excinfo:
+            poll_until_complete(
+                client, "batch-stuck", poll_interval=10, max_wait_seconds=100,
+            )
+
+        assert excinfo.value.batch_id == "batch-stuck"
+        msg = str(excinfo.value)
+        assert "batch-stuck" in msg
+        assert "label_state.json" in msg
+        assert "stage1_batch_ids" in msg
+        assert "stage2_batch_ids" in msg
+
+    def test_timeout_subclasses_batch_api_error(self):
+        from classivore.errors import BatchAPIError
+        assert issubclass(BatchPollTimeoutError, BatchAPIError)
 
 
 class TestIterSucceededResults:

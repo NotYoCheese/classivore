@@ -5,6 +5,33 @@ import csv
 from pathlib import Path
 
 
+def enriched_taxonomy_path(config):
+    """Return the canonical path where the enriched CSV lives.
+
+    This is config.enriched_file when set, otherwise a sibling
+    taxonomy_enriched.csv next to the raw taxonomy. Always returns
+    a Path; does not check existence. Use this when you need the
+    destination path for writing or when the file may not yet exist.
+    """
+    return config.enriched_file or (
+        config.taxonomy_file.parent / "taxonomy_enriched.csv"
+    )
+
+
+def apply_enriched_if_present(config):
+    """Switch config.taxonomy_file to the enriched CSV if one exists.
+
+    Mutates the config so downstream load_taxonomy() reads the enriched
+    rows. Returns the path that was applied, or None if no enriched
+    file was found (caller continues with the raw taxonomy).
+    """
+    enriched_path = enriched_taxonomy_path(config)
+    if enriched_path.exists():
+        config.taxonomy_file = enriched_path
+        return enriched_path
+    return None
+
+
 def load_taxonomy(config):
     """Load taxonomy CSV into a list of category dicts.
 
