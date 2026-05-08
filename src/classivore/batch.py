@@ -10,10 +10,42 @@ import time
 import anthropic
 from dotenv import load_dotenv
 
-from classivore.errors import ConfigError
+from classivore.errors import BatchAPIError, ConfigError
 from classivore.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+DEFAULT_MAX_WAIT_SECONDS = 86_400  # 24h
+SUBMIT_RETRY_DELAYS = (1, 2, 4)
+
+
+class BatchPollTimeoutError(BatchAPIError):
+    """Poll loop exceeded max_wait_seconds without the batch ending.
+
+    The batch ID is preserved on the exception so the operator can recover
+    it from the persisted state file (see `label_state.json` under
+    `stage1_batch_ids` / `stage2_batch_ids`) and resume manually.
+    """
+
+    def __init__(self, batch_id, elapsed_seconds):
+        self.batch_id = batch_id
+        self.elapsed_seconds = elapsed_seconds
+        super().__init__(
+            f"Batch {batch_id} did not end within {elapsed_seconds}s. "
+            f"The batch ID is persisted in label_state.json under "
+            f"stage1_batch_ids / stage2_batch_ids; rerun the pipeline "
+            f"to resume polling, or query Anthropic directly with this ID."
+        )
+
+
+def _is_retryable(exc):
+    """Return True for transient batch-submit errors worth retrying."""
+    if isinstance(exc, (anthropic.APIConnectionError, anthropic.RateLimitError)):
+        return True
+    if isinstance(exc, anthropic.APIStatusError):
+        status = getattr(exc, "status_code", None)
+        return status is not None and status >= 500
+    return False
 
 
 def get_api_client():
@@ -42,6 +74,10 @@ def get_api_client():
 def submit_batch(client, requests):
     """Submit a batch of requests to the Anthropic Message Batches API.
 
+    Retries up to 3 times on transient failures (connection errors, rate
+    limits, 5xx) with exponential backoff (1s, 2s, 4s). 4xx other than 429
+    propagates immediately so the caller surfaces real bad-request bugs.
+
     Args:
         client: anthropic.Anthropic client instance.
         requests: List of batch request dicts (custom_id + params).
@@ -52,11 +88,41 @@ def submit_batch(client, requests):
     if not requests:
         return None
 
-    batch = client.messages.batches.create(requests=requests)
-    return batch.id
+    last_exc = None
+    for attempt, delay in enumerate(SUBMIT_RETRY_DELAYS, start=1):
+        try:
+            batch = client.messages.batches.create(requests=requests)
+            return batch.id
+        except Exception as e:
+            if not _is_retryable(e):
+                raise
+            last_exc = e
+            logger.warning(
+                "batch_submit_retry",
+                attempt=attempt,
+                error_class=type(e).__name__,
+                error=str(e),
+                sleep_seconds=delay,
+            )
+            time.sleep(delay)
+
+    # Fourth and final attempt without sleep after the last backoff.
+    try:
+        batch = client.messages.batches.create(requests=requests)
+        return batch.id
+    except Exception as e:
+        if _is_retryable(e):
+            logger.error(
+                "batch_submit_exhausted",
+                attempts=len(SUBMIT_RETRY_DELAYS) + 1,
+                error_class=type(e).__name__,
+                error=str(e),
+            )
+        raise e from last_exc
 
 
-def poll_until_complete(client, batch_id, poll_interval=30, verbose=False):
+def poll_until_complete(client, batch_id, poll_interval=30, verbose=False,
+                        max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS):
     """Poll a batch until processing completes.
 
     Args:
@@ -64,10 +130,18 @@ def poll_until_complete(client, batch_id, poll_interval=30, verbose=False):
         batch_id: The batch ID to poll.
         poll_interval: Seconds between polls (default 30).
         verbose: Print progress updates.
+        max_wait_seconds: Wall-clock timeout (default 24h). On expiry, raises
+            BatchPollTimeoutError. The orchestrator already persists the batch
+            ID in label_state.json for resume; the exception propagates so the
+            operator sees it.
 
     Returns:
         The final MessageBatch object.
+
+    Raises:
+        BatchPollTimeoutError: If max_wait_seconds elapses before the batch ends.
     """
+    deadline = time.monotonic() + max_wait_seconds
     while True:
         batch = client.messages.batches.retrieve(batch_id)
 
@@ -83,6 +157,10 @@ def poll_until_complete(client, batch_id, poll_interval=30, verbose=False):
 
         if batch.processing_status == "ended":
             return batch
+
+        elapsed = max_wait_seconds - (deadline - time.monotonic())
+        if time.monotonic() >= deadline:
+            raise BatchPollTimeoutError(batch_id, int(elapsed))
 
         time.sleep(poll_interval)
 

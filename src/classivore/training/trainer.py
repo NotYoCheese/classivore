@@ -6,7 +6,6 @@ Uses HuggingFace Trainer with custom loss function, early stopping, and
 automatic device selection.
 """
 
-import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +21,7 @@ from transformers import (
 )
 
 from classivore.logging_config import get_logger
+from classivore.persistence import atomic_json_save
 from classivore.training.dataset import (
     ClassificationDataset,
     load_training_data,
@@ -173,7 +173,10 @@ def train_model(config, data_dir, output_dir=None, device=None,
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Training arguments
+    # Training arguments. use_cpu honors device="cpu" overrides on Macs;
+    # without it HF Trainer auto-selects MPS for the model while our
+    # class_weights/loss_fn stay on CPU, producing a device-mismatch error
+    # at the first forward pass.
     training_args = TrainingArguments(
         output_dir=str(output_dir / "checkpoints"),
         num_train_epochs=num_epochs,
@@ -181,6 +184,7 @@ def train_model(config, data_dir, output_dir=None, device=None,
         per_device_eval_batch_size=bs * 2,
         learning_rate=lr,
         fp16=use_fp16,
+        use_cpu=(device_name == "cpu"),
         eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
@@ -232,8 +236,7 @@ def train_model(config, data_dir, output_dir=None, device=None,
             if name in name_to_id
         },
     }
-    with open(output_dir / "label_mappings.json", "w") as f:
-        json.dump(label_mappings, f, indent=2)
+    atomic_json_save(label_mappings, output_dir / "label_mappings.json")
 
     # Save taxonomy metadata for self-contained inference
     cat_by_name = {c["name"]: c for c in categories}
@@ -252,8 +255,7 @@ def train_model(config, data_dir, output_dir=None, device=None,
                 "is_leaf": cat["is_leaf"],
                 "parent_name": cat["path"][-2] if len(cat["path"]) >= 2 else None,
             }
-    with open(output_dir / "taxonomy_metadata.json", "w") as f:
-        json.dump(taxonomy_metadata, f, indent=2)
+    atomic_json_save(taxonomy_metadata, output_dir / "taxonomy_metadata.json")
 
     # Save training report
     report = {
@@ -282,8 +284,7 @@ def train_model(config, data_dir, output_dir=None, device=None,
             "pipeline_pages": stats["pipeline_pages"],
         },
     }
-    with open(output_dir / "training_report.json", "w") as f:
-        json.dump(report, f, indent=2)
+    atomic_json_save(report, output_dir / "training_report.json")
 
     logger.info("model_saved", path=str(output_dir))
 

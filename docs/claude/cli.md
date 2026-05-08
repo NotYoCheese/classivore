@@ -17,7 +17,6 @@ classivore hints     — Generate domain hints for tier1 categories
 classivore publish   — Publish trained model to HuggingFace Hub
 classivore hf init   — Create HuggingFace repo
 classivore taxonomy  — Show taxonomy info, stats, and coverage gaps
-classivore serve     — Start local API server (stub)
 ```
 
 ## Common Arguments

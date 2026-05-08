@@ -4,6 +4,7 @@
 import json
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from classivore.logging_config import get_logger
@@ -31,6 +32,28 @@ def atomic_json_save(data: dict, target: Path, directory: Path | None = None) ->
     try:
         with open(fd, "w") as f:
             json.dump(data, f, indent=2)
+        Path(tmp_path).replace(target)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+
+@contextmanager
+def atomic_writer(target: Path):
+    """Yield a text-mode file handle that becomes `target` on success.
+
+    Writes go to a hidden temp file in the same directory; on a clean
+    exit the temp file replaces the target via os.replace (atomic on
+    POSIX). On any exception the temp file is removed and the original
+    target is left untouched. Use for streaming NDJSON or other
+    line-by-line writes where atomic_json_save's dict signature does
+    not fit.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=target.parent, prefix=".", suffix=".tmp")
+    try:
+        with open(fd, "w") as f:
+            yield f
         Path(tmp_path).replace(target)
     except BaseException:
         Path(tmp_path).unlink(missing_ok=True)
